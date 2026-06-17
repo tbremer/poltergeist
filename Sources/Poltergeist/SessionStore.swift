@@ -14,11 +14,13 @@ final class SessionStore: ObservableObject {
     @Published var selectedID: TerminalSession.ID?
 
     private var nextOrdinal = 1
+    private let environmentOverrides: [String: String]
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
     private var flushTimer: Timer?
 
-    init() {
+    init(environmentOverrides: [String: String] = [:]) {
+        self.environmentOverrides = environmentOverrides
         restoreOrCreate()
 
         // Persist selection changes (e.g. clicking a sidebar row).
@@ -49,7 +51,11 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func newSession(workingDirectory: URL? = nil) -> TerminalSession {
-        let session = TerminalSession(ordinal: nextOrdinal, workingDirectory: workingDirectory)
+        let session = TerminalSession(
+            ordinal: nextOrdinal,
+            workingDirectory: workingDirectory,
+            environmentOverrides: environmentOverrides
+        )
         nextOrdinal += 1
         sessions.append(session)
         selectedID = session.id
@@ -92,7 +98,8 @@ final class SessionStore: ObservableObject {
                 ordinal: ps.ordinal,
                 customTitle: ps.customTitle,
                 workingDirectory: ps.workingDirectory.map { URL(fileURLWithPath: $0) },
-                createdAt: ps.createdAt
+                createdAt: ps.createdAt,
+                environmentOverrides: environmentOverrides
             )
             sessions.append(session)
         }

@@ -8,7 +8,8 @@ import GhosttyTerminal
 /// via context menu. Background sessions stay alive in a keep-alive ZStack so
 /// their output is never dropped.
 struct RootView: View {
-    @StateObject private var store = SessionStore()
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: SessionStore
     @FocusState private var focusedSession: TerminalSession.ID?
 
     @State private var renamingID: TerminalSession.ID?
@@ -51,6 +52,18 @@ struct RootView: View {
                                 store.closeSession(session.id)
                             }
                         }
+                }
+            }
+
+            Section("OpenCode") {
+                if model.opencodeSessions.isEmpty {
+                    Text(model.server.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.opencodeSessions) { ocSession in
+                        OpencodeRow(session: ocSession)
+                    }
                 }
             }
         }
@@ -132,5 +145,27 @@ private struct SessionRow: View {
     var body: some View {
         Label(session.displayName, systemImage: "terminal")
             .lineLimit(1)
+    }
+}
+
+/// One row in the sidebar's OpenCode section — a server session with quick stats.
+private struct OpencodeRow: View {
+    let session: OpencodeSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(session.title ?? session.id)
+                .font(.callout)
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                if let model = session.model?.id { Text(model) }
+                if let cost = session.cost, cost > 0 { Text(String(format: "$%.2f", cost)) }
+                Text("\(session.totalTokens) tok")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .padding(.vertical, 1)
     }
 }

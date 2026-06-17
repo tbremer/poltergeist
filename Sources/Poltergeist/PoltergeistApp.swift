@@ -9,10 +9,11 @@ import AppKit
 @main
 struct PoltergeistApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(model: model, store: model.store)
                 .frame(minWidth: 900, minHeight: 560)
         }
     }

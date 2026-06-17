@@ -34,6 +34,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         customTitle: String? = nil,
         workingDirectory: URL? = nil,
         createdAt: Date = Date(),
+        environmentOverrides: [String: String] = [:],
         fontSize: Float = 14
     ) {
         let pty = PTYProcess()
@@ -46,6 +47,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "Poltergeist"
+        for (key, value) in environmentOverrides { environment[key] = value }
         let cwd = (workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser).path
 
         pty.configure(
