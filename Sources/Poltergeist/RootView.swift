@@ -116,9 +116,9 @@ struct RootView: View {
     }
 
     private func commitRename() {
-        if let id = renamingID, let session = store.sessions.first(where: { $0.id == id }) {
+        if let id = renamingID {
             let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-            session.customTitle = trimmed.isEmpty ? nil : trimmed
+            store.rename(id, to: trimmed.isEmpty ? nil : trimmed)
         }
         renamingID = nil
     }

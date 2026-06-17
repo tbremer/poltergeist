@@ -15,6 +15,9 @@ import CPty
 final class PTYProcess: @unchecked Sendable {
     var onOutput: (@Sendable (Data) -> Void)?
     var onExit: (@Sendable (Int32, UInt64) -> Void)?
+    /// Fired once, after the surface is attached and just before the child's
+    /// output is read — used to replay saved scrollback ahead of live output.
+    var onStart: (@Sendable () -> Void)?
 
     private let readQueue = DispatchQueue(label: "sh.poltergeist.pty.read")
     private let writeQueue = DispatchQueue(label: "sh.poltergeist.pty.write")
@@ -140,6 +143,10 @@ final class PTYProcess: @unchecked Sendable {
         readSource = rs
         exitSource = es
         lock.unlock()
+
+        // Replay saved scrollback into the (now attached) surface before we
+        // begin draining live output from the child.
+        onStart?()
 
         rs.resume()
         es.resume()

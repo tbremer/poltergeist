@@ -6,25 +6,40 @@ import GhosttyTerminal
 /// rendered by a GhosttyKit surface via the `.inMemory` backend.
 ///
 /// Owns the `TerminalViewState` (rendering + published terminal state), the
-/// `InMemoryTerminalSession` (GhosttyKit I/O bridge), and the `PTYProcess`
-/// (child process + pty), and wires them together. Managed by `SessionStore`.
+/// `InMemoryTerminalSession` (GhosttyKit I/O bridge), the `PTYProcess`
+/// (child process + pty), and a `Scrollback` (capture/replay). Managed by
+/// `SessionStore`.
 @MainActor
 final class TerminalSession: ObservableObject, Identifiable {
-    let id = UUID()
+    let id: UUID
     let ordinal: Int
+    let createdAt: Date
     let state: TerminalViewState
 
     /// User-assigned name; overrides the shell-reported title when set.
     @Published var customTitle: String?
 
+    /// Directory the shell was launched in; persistence fallback before the
+    /// shell reports its own working directory.
+    let launchDirectory: String
+
     private let pty: PTYProcess
     private let ioSession: InMemoryTerminalSession
+    private let scrollback: Scrollback
     private var cancellables = Set<AnyCancellable>()
 
-    init(ordinal: Int, workingDirectory: URL? = nil, fontSize: Float = 14) {
+    init(
+        id: UUID = UUID(),
+        ordinal: Int,
+        customTitle: String? = nil,
+        workingDirectory: URL? = nil,
+        createdAt: Date = Date(),
+        fontSize: Float = 14
+    ) {
         let pty = PTYProcess()
+        let scrollback = Scrollback(url: AppPaths.scrollbackFile(for: id))
 
-        // Launch parameters: the user's login shell, in their home directory.
+        // Launch parameters: the user's login shell.
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let shellName = (shellPath as NSString).lastPathComponent
         var environment = ProcessInfo.processInfo.environment
@@ -54,9 +69,18 @@ final class TerminalSession: ObservableObject, Identifiable {
             }
         )
 
-        pty.onOutput = { [weak io] data in io?.receive(data) }
+        // Tee live shell output to both the surface and the scrollback capture.
+        pty.onOutput = { [weak io, weak scrollback] data in
+            io?.receive(data)
+            scrollback?.append(data)
+        }
         pty.onExit = { [weak io] code, ms in
             io?.finish(exitCode: UInt32(truncatingIfNeeded: code), runtimeMilliseconds: ms)
+        }
+        // Replay saved history into the surface right before the shell starts.
+        pty.onStart = { [weak io, weak scrollback] in
+            guard let scrollback, !scrollback.loadedHistory.isEmpty else { return }
+            io?.receive(scrollback.loadedHistory)
         }
 
         let state = TerminalViewState()
@@ -67,9 +91,14 @@ final class TerminalSession: ObservableObject, Identifiable {
             context: .window
         )
 
+        self.id = id
         self.ordinal = ordinal
+        self.createdAt = createdAt
+        self.customTitle = customTitle
+        self.launchDirectory = cwd
         self.pty = pty
         self.ioSession = io
+        self.scrollback = scrollback
         self.state = state
 
         // Re-publish when the underlying terminal state changes (title, cwd, …)
@@ -87,7 +116,22 @@ final class TerminalSession: ObservableObject, Identifiable {
         return "Terminal \(ordinal)"
     }
 
+    /// Current working directory if the shell has reported one, else the launch dir.
+    var currentDirectory: String {
+        state.workingDirectory ?? launchDirectory
+    }
+
     func terminate() {
         pty.terminate()
+    }
+
+    /// Persist the captured scrollback to disk. Safe to call off the main actor.
+    nonisolated func flush() {
+        scrollback.flush()
+    }
+
+    /// Remove the persisted scrollback (used when a session is closed for good).
+    nonisolated func deleteScrollback() {
+        scrollback.delete()
     }
 }
