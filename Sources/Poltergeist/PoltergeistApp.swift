@@ -22,6 +22,10 @@ struct PoltergeistApp: App {
 /// (i.e. via `swift run`, before we ship a real .app bundle).
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Sessions are managed in-app via the sidebar, not native window tabs.
+        // Disabling automatic tabbing removes the system tab bar + its "+" button
+        // (which would otherwise spawn a whole new window/UI).
+        NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
