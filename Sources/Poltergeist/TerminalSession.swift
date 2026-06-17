@@ -23,6 +23,9 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// shell reports its own working directory.
     let launchDirectory: String
 
+    /// The opencode server session this terminal is attached to, if any.
+    let opencodeSessionID: String?
+
     private let pty: PTYProcess
     private let ioSession: InMemoryTerminalSession
     private let scrollback: Scrollback
@@ -35,6 +38,8 @@ final class TerminalSession: ObservableObject, Identifiable {
         workingDirectory: URL? = nil,
         createdAt: Date = Date(),
         environmentOverrides: [String: String] = [:],
+        command: [String]? = nil,
+        opencodeSessionID: String? = nil,
         fontSize: Float = 14
     ) {
         let pty = PTYProcess()
@@ -50,9 +55,20 @@ final class TerminalSession: ObservableObject, Identifiable {
         for (key, value) in environmentOverrides { environment[key] = value }
         let cwd = (workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser).path
 
+        // Either run a custom command (e.g. `opencode attach …`) or the login shell.
+        let executable: String
+        let argv: [String]
+        if let command, let first = command.first {
+            executable = first
+            argv = command
+        } else {
+            executable = shellPath
+            argv = ["-\(shellName)"] // leading dash → login shell
+        }
+
         pty.configure(
-            executable: shellPath,
-            argv: ["-\(shellName)"], // leading dash → login shell
+            executable: executable,
+            argv: argv,
             environment: environment,
             cwd: cwd
         )
@@ -98,6 +114,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.createdAt = createdAt
         self.customTitle = customTitle
         self.launchDirectory = cwd
+        self.opencodeSessionID = opencodeSessionID
         self.pty = pty
         self.ioSession = io
         self.scrollback = scrollback

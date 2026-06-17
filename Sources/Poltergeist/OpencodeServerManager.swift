@@ -19,13 +19,13 @@ final class OpencodeServerManager: ObservableObject {
 
     let baseURL: URL?
 
-    private let executable: String?
+    let executablePath: String?
     private let port: UInt16?
     private var process: Process?
 
     init() {
         let exe = Self.locateOpencode()
-        executable = exe
+        executablePath = exe
 
         guard exe != nil else {
             port = nil
@@ -53,11 +53,11 @@ final class OpencodeServerManager: ObservableObject {
     }
 
     func start() {
-        guard let executable, let port, let baseURL, process == nil else { return }
+        guard let executablePath, let port, let baseURL, process == nil else { return }
         status = .starting
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.executableURL = URL(fileURLWithPath: executablePath)
         proc.arguments = ["serve", "--hostname", "127.0.0.1", "--port", "\(port)"]
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         proc.environment = ProcessInfo.processInfo.environment

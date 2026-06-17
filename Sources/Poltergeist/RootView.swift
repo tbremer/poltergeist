@@ -62,7 +62,12 @@ struct RootView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(model.opencodeSessions) { ocSession in
-                        OpencodeRow(session: ocSession)
+                        Button {
+                            model.openOpencodeSession(ocSession)
+                        } label: {
+                            OpencodeRow(session: ocSession)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -167,5 +172,6 @@ private struct OpencodeRow: View {
             .lineLimit(1)
         }
         .padding(.vertical, 1)
+        .contentShape(Rectangle())
     }
 }

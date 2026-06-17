@@ -83,4 +83,22 @@ final class AppModel: ObservableObject {
             .filter { $0.parentID == nil }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
+
+    /// Opens an opencode server session in a new terminal attached to our server.
+    /// If a terminal is already attached to this session, selects it instead.
+    func openOpencodeSession(_ session: OpencodeSession) {
+        if let existing = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
+            store.selectedID = existing.id
+            return
+        }
+        guard let baseURL = server.baseURL, let exe = server.executablePath else { return }
+        var args = [exe, "attach", baseURL.absoluteString, "--session", session.id]
+        if let dir = session.directory { args += ["--dir", dir] }
+        store.newSession(
+            command: args,
+            workingDirectory: session.directory.map { URL(fileURLWithPath: $0) },
+            customTitle: session.title,
+            opencodeSessionID: session.id
+        )
+    }
 }

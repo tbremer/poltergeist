@@ -50,11 +50,19 @@ final class SessionStore: ObservableObject {
     }
 
     @discardableResult
-    func newSession(workingDirectory: URL? = nil) -> TerminalSession {
+    func newSession(
+        command: [String]? = nil,
+        workingDirectory: URL? = nil,
+        customTitle: String? = nil,
+        opencodeSessionID: String? = nil
+    ) -> TerminalSession {
         let session = TerminalSession(
             ordinal: nextOrdinal,
+            customTitle: customTitle,
             workingDirectory: workingDirectory,
-            environmentOverrides: environmentOverrides
+            environmentOverrides: environmentOverrides,
+            command: command,
+            opencodeSessionID: opencodeSessionID
         )
         nextOrdinal += 1
         sessions.append(session)
