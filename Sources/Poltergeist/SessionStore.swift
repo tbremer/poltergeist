@@ -89,6 +89,24 @@ final class SessionStore: ObservableObject {
         scheduleSave()
     }
 
+    func selectNext() {
+        guard !sessions.isEmpty else { return }
+        guard let id = selectedID, let idx = sessions.firstIndex(where: { $0.id == id }) else {
+            selectedID = sessions.first?.id
+            return
+        }
+        selectedID = sessions[(idx + 1) % sessions.count].id
+    }
+
+    func selectPrevious() {
+        guard !sessions.isEmpty else { return }
+        guard let id = selectedID, let idx = sessions.firstIndex(where: { $0.id == id }) else {
+            selectedID = sessions.last?.id
+            return
+        }
+        selectedID = sessions[(idx - 1 + sessions.count) % sessions.count].id
+    }
+
     // MARK: - Persistence
 
     private func restoreOrCreate() {

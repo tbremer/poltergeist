@@ -16,6 +16,24 @@ struct PoltergeistApp: App {
             RootView(model: model, store: model.store)
                 .frame(minWidth: 900, minHeight: 560)
         }
+        .commands {
+            CommandMenu("Session") {
+                Button("New Terminal") { model.store.newSession() }
+                    .keyboardShortcut("t", modifiers: .command)
+                Button("New OpenCode Session") { Task { await model.newOpencodeSession() } }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                    .disabled(!model.server.isReady)
+                Divider()
+                Button("Close Session") {
+                    if let id = model.store.selectedID { model.store.closeSession(id) }
+                }
+                .keyboardShortcut("w", modifiers: .command)
+                Button("Next Session") { model.store.selectNext() }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Previous Session") { model.store.selectPrevious() }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+            }
+        }
     }
 }
 

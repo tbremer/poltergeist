@@ -16,7 +16,7 @@ struct RootView: View {
     @State private var pendingDelete: OpencodeSession?
     @State private var renamingOpencode: OpencodeSession?
     @State private var opencodeRenameText: String = ""
-    @State private var collapsedGroups: Set<String> = []
+    @State private var expandedGroups: Set<String> = []
 
     var body: some View {
         NavigationSplitView {
@@ -25,14 +25,6 @@ struct RootView: View {
             TerminalDetailView(store: store)
                 .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
                 .navigationSubtitle(subtitle)
-        }
-        .background {
-            // ⌘W closes the selected session (hidden accelerator).
-            Button("") {
-                if let id = store.selectedID { store.closeSession(id) }
-            }
-            .keyboardShortcut("w", modifiers: .command)
-            .hidden()
         }
         .alert("Rename Session", isPresented: renamingBinding) {
             TextField("Name", text: $renameText)
@@ -123,8 +115,7 @@ struct RootView: View {
                 Button { store.newSession() } label: {
                     Image(systemName: "plus")
                 }
-                .keyboardShortcut("t", modifiers: .command)
-                .help("New Session (⌘T)")
+                .help("New Terminal (⌘T)")
             }
         }
     }
@@ -150,10 +141,12 @@ struct RootView: View {
     }
 
     private func expansionBinding(for directory: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedGroups.contains(directory) },
+        // Default-collapsed except the active terminal's project.
+        let activeDirectory = store.selectedSession?.currentDirectory
+        return Binding(
+            get: { expandedGroups.contains(directory) || directory == activeDirectory },
             set: { expanded in
-                if expanded { collapsedGroups.remove(directory) } else { collapsedGroups.insert(directory) }
+                if expanded { expandedGroups.insert(directory) } else { expandedGroups.remove(directory) }
             }
         )
     }
