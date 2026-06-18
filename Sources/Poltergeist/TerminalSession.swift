@@ -95,11 +95,13 @@ final class TerminalSession: ObservableObject, Identifiable {
         pty.onExit = { [weak io] code, ms in
             io?.finish(exitCode: UInt32(truncatingIfNeeded: code), runtimeMilliseconds: ms)
         }
-        // Replay saved history into the surface right before the shell starts.
-        pty.onStart = { [weak io, weak scrollback] in
-            guard let scrollback, !scrollback.loadedHistory.isEmpty else { return }
-            io?.receive(scrollback.loadedHistory)
-        }
+        // NOTE: We intentionally do NOT replay saved scrollback into the live
+        // surface. Replaying the raw byte log re-feeds the shell's original
+        // terminal capability queries (XTVERSION, DA1, OSC color, kitty, …),
+        // which the surface then re-answers into the freshly-spawned shell —
+        // leaking garbled control-sequence text to the prompt. A faithful
+        // "restore last screen" needs a styled screen snapshot, which the
+        // in-memory backend doesn't expose. Sessions restore fresh instead.
 
         let state = TerminalViewState()
         state.configuration = TerminalSurfaceOptions(
