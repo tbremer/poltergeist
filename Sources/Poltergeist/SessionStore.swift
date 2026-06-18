@@ -18,8 +18,8 @@ final class SessionStore: ObservableObject {
 
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
-    private let config: AppConfig
-    private let terminalTheme: TerminalTheme?
+    private var config: AppConfig
+    private var terminalTheme: TerminalTheme?
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
 
@@ -124,6 +124,12 @@ final class SessionStore: ObservableObject {
     func setGroupExpanded(_ directory: String, _ expanded: Bool) {
         if expanded { expandedGroups.insert(directory) } else { expandedGroups.remove(directory) }
         scheduleSave()
+    }
+
+    /// Updates the appearance applied to newly-created sessions (live reload).
+    func updateAppearance(config: AppConfig, terminalTheme: TerminalTheme?) {
+        self.config = config
+        self.terminalTheme = terminalTheme
     }
 
     // MARK: - Persistence

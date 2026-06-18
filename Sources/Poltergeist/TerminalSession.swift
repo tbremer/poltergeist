@@ -142,4 +142,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     func terminate() {
         pty.terminate()
     }
+
+    /// Live-applies appearance (font + theme) to the running surface.
+    func applyAppearance(theme: TerminalTheme, fontConfig: TerminalConfiguration) {
+        state.controller.setTerminalConfiguration(fontConfig)
+        state.controller.setTheme(theme)
+    }
 }

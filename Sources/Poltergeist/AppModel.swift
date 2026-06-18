@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import GhosttyTerminal
 import GhosttyTheme
 
 /// Top-level app state: owns the opencode server, the terminal session store,
@@ -11,7 +12,7 @@ final class AppModel: ObservableObject {
     let store: SessionStore
 
     /// The active color theme (from config.json), applied to terminals + chrome.
-    let currentTheme: GhosttyThemeDefinition?
+    @Published private(set) var currentTheme: GhosttyThemeDefinition?
 
     /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
@@ -41,6 +42,10 @@ final class AppModel: ObservableObject {
     private var refreshQuietUntil = Date.distantPast
     private var knownSessionCount = 0
 
+    private var appliedConfig = AppConfig()
+    private var configWatcher: ConfigWatcher?
+    private var configReloadWork: DispatchWorkItem?
+
     private var homeDirectory: String { FileManager.default.homeDirectoryForCurrentUser.path }
 
     init() {
@@ -50,6 +55,7 @@ final class AppModel: ObservableObject {
         let appConfig = AppConfig.load()
         let theme = appConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
         currentTheme = theme
+        appliedConfig = appConfig
 
         // Point every terminal at the (soon-to-be-ready) shared server.
         var overrides: [String: String] = [:]
@@ -113,6 +119,43 @@ final class AppModel: ObservableObject {
                 self?.refreshEnabled = true
                 self?.requestFullRefresh()
             }
+        }
+
+        // Live-apply config.json changes (theme/font) without relaunch.
+        let watcher = ConfigWatcher(directory: AppPaths.supportDirectory)
+        watcher.onChange = { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.scheduleConfigReload() }
+            }
+        }
+        watcher.start()
+        configWatcher = watcher
+    }
+
+    // MARK: - Live config reload
+
+    private func scheduleConfigReload() {
+        configReloadWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.reloadConfig() }
+        }
+        configReloadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func reloadConfig() {
+        let newConfig = AppConfig.load()
+        guard newConfig != appliedConfig else { return }
+        appliedConfig = newConfig
+
+        let themeDefinition = newConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        currentTheme = themeDefinition
+
+        let terminalTheme = themeDefinition?.toTerminalTheme() ?? .default
+        let fontConfig = newConfig.fontConfiguration()
+        store.updateAppearance(config: newConfig, terminalTheme: themeDefinition?.toTerminalTheme())
+        for session in store.sessions {
+            session.applyAppearance(theme: terminalTheme, fontConfig: fontConfig)
         }
     }
 
