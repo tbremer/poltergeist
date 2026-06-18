@@ -15,6 +15,8 @@ struct PersistedState: Codable {
     var sessions: [PersistedSession]
     var selectedID: UUID?
     var nextOrdinal: Int
+    /// Directories of OpenCode project groups the user has expanded in the sidebar.
+    var expandedGroups: [String]?
 }
 
 enum Persistence {

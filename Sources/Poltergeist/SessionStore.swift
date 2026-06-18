@@ -12,6 +12,8 @@ import AppKit
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [TerminalSession] = []
     @Published var selectedID: TerminalSession.ID?
+    /// Directories of expanded OpenCode project groups (persisted UI state).
+    @Published var expandedGroups: Set<String> = []
 
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
@@ -111,6 +113,11 @@ final class SessionStore: ObservableObject {
         selectedID = sessions[(idx - 1 + sessions.count) % sessions.count].id
     }
 
+    func setGroupExpanded(_ directory: String, _ expanded: Bool) {
+        if expanded { expandedGroups.insert(directory) } else { expandedGroups.remove(directory) }
+        scheduleSave()
+    }
+
     // MARK: - Persistence
 
     private func restoreOrCreate() {
@@ -120,6 +127,7 @@ final class SessionStore: ObservableObject {
         }
 
         nextOrdinal = max(state.nextOrdinal, 1)
+        expandedGroups = Set(state.expandedGroups ?? [])
         for ps in state.sessions {
             let session = TerminalSession(
                 id: ps.id,
@@ -156,7 +164,8 @@ final class SessionStore: ObservableObject {
                 )
             },
             selectedID: selectedID,
-            nextOrdinal: nextOrdinal
+            nextOrdinal: nextOrdinal,
+            expandedGroups: Array(expandedGroups)
         )
     }
 

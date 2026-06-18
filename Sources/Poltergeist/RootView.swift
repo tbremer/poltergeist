@@ -16,7 +16,6 @@ struct RootView: View {
     @State private var pendingDelete: OpencodeSession?
     @State private var renamingOpencode: OpencodeSession?
     @State private var opencodeRenameText: String = ""
-    @State private var expandedGroups: Set<String> = []
 
     var body: some View {
         NavigationSplitView {
@@ -141,13 +140,11 @@ struct RootView: View {
     }
 
     private func expansionBinding(for directory: String) -> Binding<Bool> {
-        // Default-collapsed except the active terminal's project.
+        // Default-collapsed except the active terminal's project; persisted.
         let activeDirectory = store.selectedSession?.currentDirectory
         return Binding(
-            get: { expandedGroups.contains(directory) || directory == activeDirectory },
-            set: { expanded in
-                if expanded { expandedGroups.insert(directory) } else { expandedGroups.remove(directory) }
-            }
+            get: { store.expandedGroups.contains(directory) || directory == activeDirectory },
+            set: { store.setGroupExpanded(directory, $0) }
         )
     }
 
