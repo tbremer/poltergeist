@@ -1,8 +1,8 @@
 import Foundation
 
 /// Metadata for a session that survives app restarts. The live process is not
-/// preserved — on restore we replay saved scrollback and start a fresh shell in
-/// the last known working directory.
+/// preserved — on restore we start a fresh shell in the last known working
+/// directory.
 struct PersistedSession: Codable, Identifiable {
     var id: UUID
     var ordinal: Int

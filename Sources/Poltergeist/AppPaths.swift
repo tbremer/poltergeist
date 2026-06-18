@@ -16,14 +16,4 @@ enum AppPaths {
     static var sessionsFile: URL {
         supportDirectory.appendingPathComponent("sessions.json")
     }
-
-    static var scrollbackDirectory: URL {
-        let dir = supportDirectory.appendingPathComponent("scrollback", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
-    static func scrollbackFile(for id: UUID) -> URL {
-        scrollbackDirectory.appendingPathComponent("\(id.uuidString).raw")
-    }
 }

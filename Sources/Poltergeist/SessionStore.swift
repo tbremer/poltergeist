@@ -3,11 +3,11 @@ import Combine
 import AppKit
 
 /// Owns the set of terminal sessions and the current selection, and persists
-/// both session metadata and scrollback across launches.
+/// session metadata across launches.
 ///
-/// On launch it restores the previous sessions (replaying saved scrollback and
-/// starting fresh shells in the last working directory). The live PTYs keep
-/// running while a session is in the list, even when not the visible one.
+/// On launch it restores the previous sessions (starting fresh shells in the
+/// last working directory). The live PTYs keep running while a session is in
+/// the list, even when not the visible one.
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [TerminalSession] = []
@@ -17,11 +17,15 @@ final class SessionStore: ObservableObject {
     private let environmentOverrides: [String: String]
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
-    private var flushTimer: Timer?
 
     init(environmentOverrides: [String: String] = [:]) {
         self.environmentOverrides = environmentOverrides
         restoreOrCreate()
+
+        // Scrollback persistence was removed; clean up any leftover files.
+        try? FileManager.default.removeItem(
+            at: AppPaths.supportDirectory.appendingPathComponent("scrollback", isDirectory: true)
+        )
 
         // Persist selection changes (e.g. clicking a sidebar row).
         $selectedID
@@ -29,18 +33,13 @@ final class SessionStore: ObservableObject {
             .sink { [weak self] _ in self?.scheduleSave() }
             .store(in: &cancellables)
 
-        // Flush scrollback + metadata on quit.
+        // Persist metadata on quit.
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.persistAll() }
-        }
-
-        // Periodic scrollback flush for crash resilience.
-        flushTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushScrollbacks() }
+            MainActor.assumeIsolated { self?.persistMetadata() }
         }
     }
 
@@ -75,7 +74,6 @@ final class SessionStore: ObservableObject {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         let session = sessions.remove(at: index)
         session.terminate()
-        session.deleteScrollback()
 
         // If we closed the selected one, select the neighbour (next, else last).
         if selectedID == id {
@@ -149,14 +147,5 @@ final class SessionStore: ObservableObject {
 
     private func persistMetadata() {
         Persistence.save(snapshot())
-    }
-
-    private func flushScrollbacks() {
-        for session in sessions { session.flush() }
-    }
-
-    func persistAll() {
-        flushScrollbacks()
-        persistMetadata()
     }
 }

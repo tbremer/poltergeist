@@ -6,9 +6,8 @@ import GhosttyTerminal
 /// rendered by a GhosttyKit surface via the `.inMemory` backend.
 ///
 /// Owns the `TerminalViewState` (rendering + published terminal state), the
-/// `InMemoryTerminalSession` (GhosttyKit I/O bridge), the `PTYProcess`
-/// (child process + pty), and a `Scrollback` (capture/replay). Managed by
-/// `SessionStore`.
+/// `InMemoryTerminalSession` (GhosttyKit I/O bridge), and the `PTYProcess`
+/// (child process + pty). Managed by `SessionStore`.
 @MainActor
 final class TerminalSession: ObservableObject, Identifiable {
     let id: UUID
@@ -28,7 +27,6 @@ final class TerminalSession: ObservableObject, Identifiable {
 
     private let pty: PTYProcess
     private let ioSession: InMemoryTerminalSession
-    private let scrollback: Scrollback
     private var cancellables = Set<AnyCancellable>()
 
     init(
@@ -43,7 +41,6 @@ final class TerminalSession: ObservableObject, Identifiable {
         fontSize: Float = 14
     ) {
         let pty = PTYProcess()
-        let scrollback = Scrollback(url: AppPaths.scrollbackFile(for: id))
 
         // Launch parameters: the user's login shell.
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
@@ -87,21 +84,14 @@ final class TerminalSession: ObservableObject, Identifiable {
             }
         )
 
-        // Tee live shell output to both the surface and the scrollback capture.
-        pty.onOutput = { [weak io, weak scrollback] data in
-            io?.receive(data)
-            scrollback?.append(data)
-        }
+        pty.onOutput = { [weak io] data in io?.receive(data) }
         pty.onExit = { [weak io] code, ms in
             io?.finish(exitCode: UInt32(truncatingIfNeeded: code), runtimeMilliseconds: ms)
         }
-        // NOTE: We intentionally do NOT replay saved scrollback into the live
-        // surface. Replaying the raw byte log re-feeds the shell's original
-        // terminal capability queries (XTVERSION, DA1, OSC color, kitty, …),
-        // which the surface then re-answers into the freshly-spawned shell —
-        // leaking garbled control-sequence text to the prompt. A faithful
-        // "restore last screen" needs a styled screen snapshot, which the
-        // in-memory backend doesn't expose. Sessions restore fresh instead.
+        // Scrollback is intentionally not persisted/replayed: replaying the raw
+        // byte log re-feeds the shell's capability queries into the surface,
+        // which re-answers them into the new shell (garbled output). Sessions
+        // restore fresh (name, cwd, new shell).
 
         let state = TerminalViewState()
         state.configuration = TerminalSurfaceOptions(
@@ -119,7 +109,6 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.opencodeSessionID = opencodeSessionID
         self.pty = pty
         self.ioSession = io
-        self.scrollback = scrollback
         self.state = state
 
         // Re-publish when the underlying terminal state changes (title, cwd, …)
@@ -144,15 +133,5 @@ final class TerminalSession: ObservableObject, Identifiable {
 
     func terminate() {
         pty.terminate()
-    }
-
-    /// Persist the captured scrollback to disk. Safe to call off the main actor.
-    nonisolated func flush() {
-        scrollback.flush()
-    }
-
-    /// Remove the persisted scrollback (used when a session is closed for good).
-    nonisolated func deleteScrollback() {
-        scrollback.delete()
     }
 }
