@@ -38,6 +38,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         environmentOverrides: [String: String] = [:],
         command: [String]? = nil,
         opencodeSessionID: String? = nil,
+        fontFamily: String? = nil,
         fontSize: Float = 14
     ) {
         let pty = PTYProcess()
@@ -93,7 +94,13 @@ final class TerminalSession: ObservableObject, Identifiable {
         // which re-answers them into the new shell (garbled output). Sessions
         // restore fresh (name, cwd, new shell).
 
-        let state = TerminalViewState()
+        var terminalConfiguration = TerminalConfiguration()
+        if let fontFamily, !fontFamily.isEmpty {
+            terminalConfiguration = terminalConfiguration.fontFamily(fontFamily)
+        }
+        terminalConfiguration = terminalConfiguration.fontSize(fontSize)
+
+        let state = TerminalViewState(terminalConfiguration: terminalConfiguration)
         state.configuration = TerminalSurfaceOptions(
             backend: .inMemory(io),
             fontSize: fontSize,

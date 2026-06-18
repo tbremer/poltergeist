@@ -16,4 +16,8 @@ enum AppPaths {
     static var sessionsFile: URL {
         supportDirectory.appendingPathComponent("sessions.json")
     }
+
+    static var configFile: URL {
+        supportDirectory.appendingPathComponent("config.json")
+    }
 }

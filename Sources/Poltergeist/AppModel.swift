@@ -48,7 +48,7 @@ final class AppModel: ObservableObject {
         if let base = server.baseURL {
             overrides["OPENCODE_BASE_URL"] = base.absoluteString
         }
-        store = SessionStore(environmentOverrides: overrides)
+        store = SessionStore(environmentOverrides: overrides, config: AppConfig.load())
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
 

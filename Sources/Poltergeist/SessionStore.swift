@@ -15,11 +15,13 @@ final class SessionStore: ObservableObject {
 
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
+    private let config: AppConfig
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
 
-    init(environmentOverrides: [String: String] = [:]) {
+    init(environmentOverrides: [String: String] = [:], config: AppConfig = AppConfig()) {
         self.environmentOverrides = environmentOverrides
+        self.config = config
         restoreOrCreate()
 
         // Scrollback persistence was removed; clean up any leftover files.
@@ -61,7 +63,9 @@ final class SessionStore: ObservableObject {
             workingDirectory: workingDirectory,
             environmentOverrides: environmentOverrides,
             command: command,
-            opencodeSessionID: opencodeSessionID
+            opencodeSessionID: opencodeSessionID,
+            fontFamily: config.fontFamily,
+            fontSize: config.effectiveFontSize
         )
         nextOrdinal += 1
         sessions.append(session)
@@ -123,7 +127,9 @@ final class SessionStore: ObservableObject {
                 customTitle: ps.customTitle,
                 workingDirectory: ps.workingDirectory.map { URL(fileURLWithPath: $0) },
                 createdAt: ps.createdAt,
-                environmentOverrides: environmentOverrides
+                environmentOverrides: environmentOverrides,
+                fontFamily: config.fontFamily,
+                fontSize: config.effectiveFontSize
             )
             sessions.append(session)
         }
