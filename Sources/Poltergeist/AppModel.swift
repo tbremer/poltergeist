@@ -1,8 +1,12 @@
 import Foundation
 import Combine
+import SwiftUI
 import AppKit
 import GhosttyTerminal
 import GhosttyTheme
+
+/// Which system appearance a theme applies to.
+enum ThemeSlot: Hashable { case light, dark }
 
 /// Top-level app state: owns the opencode server, the terminal session store,
 /// and the live opencode session list shown in the sidebar.
@@ -11,8 +15,11 @@ final class AppModel: ObservableObject {
     let server: OpencodeServerManager
     let store: SessionStore
 
-    /// The active color theme (from config.json), applied to terminals + chrome.
-    @Published private(set) var currentTheme: GhosttyThemeDefinition?
+    /// Resolved theme per appearance (applied to terminals + window chrome).
+    @Published private(set) var lightThemeDef: GhosttyThemeDefinition?
+    @Published private(set) var darkThemeDef: GhosttyThemeDefinition?
+    /// Non-nil only in single-theme mode: forces the window appearance.
+    @Published private(set) var forcedScheme: ColorScheme?
 
     /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
@@ -53,9 +60,11 @@ final class AppModel: ObservableObject {
         self.server = server
 
         let appConfig = AppConfig.load()
-        let theme = appConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
-        currentTheme = theme
         appliedConfig = appConfig
+        let resolved = Self.resolveThemes(appConfig)
+        lightThemeDef = resolved.light
+        darkThemeDef = resolved.dark
+        forcedScheme = resolved.forced
 
         // Point every terminal at the (soon-to-be-ready) shared server.
         var overrides: [String: String] = [:]
@@ -65,7 +74,7 @@ final class AppModel: ObservableObject {
         store = SessionStore(
             environmentOverrides: overrides,
             config: appConfig,
-            terminalTheme: theme?.toTerminalTheme()
+            terminalTheme: resolved.terminal
         )
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
@@ -149,26 +158,53 @@ final class AppModel: ObservableObject {
         applyConfig(newConfig)
     }
 
+    var lightThemeName: String? { appliedConfig.lightTheme }
+    var darkThemeName: String? { appliedConfig.darkTheme }
+
     private func applyConfig(_ newConfig: AppConfig) {
         appliedConfig = newConfig
+        let resolved = Self.resolveThemes(newConfig)
+        lightThemeDef = resolved.light
+        darkThemeDef = resolved.dark
+        forcedScheme = resolved.forced
 
-        let themeDefinition = newConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
-        currentTheme = themeDefinition
-
-        let terminalTheme = themeDefinition?.toTerminalTheme() ?? .default
         let fontConfig = newConfig.fontConfiguration()
-        store.updateAppearance(config: newConfig, terminalTheme: themeDefinition?.toTerminalTheme())
+        store.updateAppearance(config: newConfig, terminalTheme: resolved.terminal)
         for session in store.sessions {
-            session.applyAppearance(theme: terminalTheme, fontConfig: fontConfig)
+            session.applyAppearance(theme: resolved.terminal, fontConfig: fontConfig)
         }
     }
 
-    /// Picks a theme by name (nil = default): persists to config.json + applies live.
-    func selectTheme(_ name: String?) {
+    /// Picks a theme (nil = default) for an appearance slot; persists + live-applies.
+    func selectTheme(_ name: String?, for slot: ThemeSlot) {
         var newConfig = appliedConfig
-        newConfig.theme = name
+        switch slot {
+        case .light: newConfig.lightTheme = name
+        case .dark: newConfig.darkTheme = name
+        }
         AppConfig.save(newConfig)
         applyConfig(newConfig)
+    }
+
+    private static func resolveThemes(
+        _ config: AppConfig
+    ) -> (light: GhosttyThemeDefinition?, dark: GhosttyThemeDefinition?, forced: ColorScheme?, terminal: TerminalTheme) {
+        let lightDef = (config.lightTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        let darkDef = (config.darkTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        let perAppearance = config.lightTheme != nil || config.darkTheme != nil
+        let forced: ColorScheme? = perAppearance
+            ? nil
+            : (config.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }).map { $0.isDark ? .dark : .light }
+        let terminal: TerminalTheme
+        if lightDef == nil, darkDef == nil {
+            terminal = .default
+        } else {
+            terminal = TerminalTheme(
+                light: lightDef?.toTerminalConfiguration() ?? TerminalConfiguration(),
+                dark: darkDef?.toTerminalConfiguration() ?? TerminalConfiguration()
+            )
+        }
+        return (lightDef, darkDef, forced, terminal)
     }
 
     // MARK: - Refresh scheduling

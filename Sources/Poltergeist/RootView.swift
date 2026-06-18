@@ -11,6 +11,7 @@ import GhosttyTheme
 struct RootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: SessionStore
+    @Environment(\.colorScheme) private var systemScheme
 
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
@@ -28,7 +29,7 @@ struct RootView: View {
                 .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
                 .navigationSubtitle(subtitle)
         }
-        .preferredColorScheme(themeScheme)
+        .preferredColorScheme(model.forcedScheme)
         .alert("Rename Session", isPresented: renamingBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingID = nil }
@@ -145,7 +146,7 @@ struct RootView: View {
                 }
                 .help("Theme")
                 .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-                    ThemePicker(model: model, isPresented: $showThemePicker)
+                    ThemePicker(model: model)
                 }
             }
         }
@@ -157,15 +158,17 @@ struct RootView: View {
         } ?? ""
     }
 
-    /// Window light/dark appearance derived from the active theme (nil = follow system).
-    private var themeScheme: ColorScheme? {
-        guard let theme = model.currentTheme else { return nil }
-        return theme.isDark ? .dark : .light
+    /// Effective appearance: forced by a single theme, else follows the system.
+    private var activeScheme: ColorScheme { model.forcedScheme ?? systemScheme }
+
+    /// Theme definition for the active appearance (light vs dark slot).
+    private var activeThemeDef: GhosttyThemeDefinition? {
+        activeScheme == .dark ? model.darkThemeDef : model.lightThemeDef
     }
 
     /// Sidebar tint derived from the active theme's background (nil = default chrome).
     private var themeBackground: Color? {
-        model.currentTheme.flatMap { Color(hexRGB: $0.background) }
+        activeThemeDef.flatMap { Color(hexRGB: $0.background) }
     }
 
     // MARK: - Rename
@@ -249,46 +252,88 @@ private struct TerminalDetailView: View {
 
 /// Searchable theme picker (popover). Selecting persists to config.json and
 /// applies live.
+/// Button style that highlights its row on hover (and press) for clear feedback.
+private struct HoverHighlightButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HoverBody(configuration: configuration)
+    }
+
+    private struct HoverBody: View {
+        let configuration: Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(RoundedRectangle(cornerRadius: 5).fill(fill))
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+
+        private var fill: Color {
+            if configuration.isPressed { return .primary.opacity(0.16) }
+            return hovering ? .primary.opacity(0.08) : .clear
+        }
+    }
+}
+
+/// Searchable theme picker (popover) with a Light/Dark slot selector. Selecting
+/// persists to config.json and applies live; stays open so both can be set.
 private struct ThemePicker: View {
     @ObservedObject var model: AppModel
-    @Binding var isPresented: Bool
+    @Environment(\.colorScheme) private var systemScheme
     @State private var query = ""
+    @State private var slot: ThemeSlot = .dark
+
+    private var selectedName: String? {
+        slot == .light ? model.lightThemeName : model.darkThemeName
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("", selection: $slot) {
+                Text("Light").tag(ThemeSlot.light)
+                Text("Dark").tag(ThemeSlot.dark)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
             TextField("Search themes…", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .padding(8)
             Divider()
+
             List {
                 Button {
-                    model.selectTheme(nil)
-                    isPresented = false
+                    model.selectTheme(nil, for: slot)
                 } label: {
                     HStack {
                         Text("Default")
                         Spacer()
-                        if model.currentTheme == nil {
+                        if selectedName == nil {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverHighlightButtonStyle())
 
-                ForEach(GhosttyThemeCatalog.search(query)) { theme in
+                ForEach(query.isEmpty ? GhosttyThemeCatalog.allThemes : GhosttyThemeCatalog.search(query)) { theme in
                     Button {
-                        model.selectTheme(theme.name)
-                        isPresented = false
+                        model.selectTheme(theme.name, for: slot)
                     } label: {
-                        ThemeSwatchRow(theme: theme, selected: theme.name == model.currentTheme?.name)
+                        ThemeSwatchRow(theme: theme, selected: theme.name == selectedName)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HoverHighlightButtonStyle())
                 }
             }
             .listStyle(.plain)
         }
-        .frame(width: 300, height: 420)
+        .frame(width: 300, height: 460)
+        .onAppear { slot = systemScheme == .dark ? .dark : .light }
     }
 }
 

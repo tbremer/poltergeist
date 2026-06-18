@@ -14,7 +14,9 @@ import GhosttyTerminal
 struct AppConfig: Codable, Equatable {
     var fontFamily: String?
     var fontSize: Float?
-    var theme: String?
+    var theme: String?        // single theme (forces window appearance) if light/dark unset
+    var lightTheme: String?   // theme for light system appearance
+    var darkTheme: String?    // theme for dark system appearance
 
     var effectiveFontSize: Float { fontSize ?? 14 }
 
