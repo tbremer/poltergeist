@@ -87,23 +87,42 @@ struct RootView: View {
             }
 
             ForEach(model.opencodeGroups) { group in
-                Section(group.displayName, isExpanded: expansionBinding(for: group.directory)) {
-                    ForEach(group.sessions) { ocSession in
-                        Button {
-                            model.openOpencodeSession(ocSession)
-                        } label: {
-                            OpencodeRow(session: ocSession)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button("Open") { model.openOpencodeSession(ocSession) }
-                            Button("Rename…") { beginOpencodeRename(ocSession) }
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                pendingDelete = ocSession
+                let expanded = store.expandedGroups.contains(group.directory)
+                Section {
+                    if expanded {
+                        ForEach(group.sessions) { ocSession in
+                            Button {
+                                model.openOpencodeSession(ocSession)
+                            } label: {
+                                OpencodeRow(session: ocSession)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Open") { model.openOpencodeSession(ocSession) }
+                                Button("Rename…") { beginOpencodeRename(ocSession) }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    pendingDelete = ocSession
+                                }
                             }
                         }
                     }
+                } header: {
+                    Button {
+                        store.setGroupExpanded(group.directory, !expanded)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 10)
+                            Text(group.displayName).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("\(group.sessions.count)").foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -139,14 +158,6 @@ struct RootView: View {
         Binding(get: { renamingOpencode != nil }, set: { if !$0 { renamingOpencode = nil } })
     }
 
-    private func expansionBinding(for directory: String) -> Binding<Bool> {
-        // Default-collapsed except the active terminal's project; persisted.
-        let activeDirectory = store.selectedSession?.currentDirectory
-        return Binding(
-            get: { store.expandedGroups.contains(directory) || directory == activeDirectory },
-            set: { store.setGroupExpanded(directory, $0) }
-        )
-    }
 
     private func beginOpencodeRename(_ session: OpencodeSession) {
         renamingOpencode = session
