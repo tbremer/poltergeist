@@ -186,4 +186,33 @@ final class AppModel: ObservableObject {
         }
         scheduleRefresh()
     }
+
+    /// Renames an opencode session server-side (PATCH), with an optimistic
+    /// local update so the sidebar reflects it immediately.
+    func renameOpencodeSession(_ session: OpencodeSession, to title: String) async {
+        guard let client else { return }
+        try? await client.updateSessionTitle(id: session.id, title: title, directory: session.directory)
+
+        if var existing = opencodeByID[session.id] {
+            existing.title = title
+            opencodeByID[session.id] = existing
+        }
+        opencodeSessions = opencodeSessions.map { retitled($0, ifID: session.id, to: title) }
+        opencodeGroups = opencodeGroups.map { group in
+            var group = group
+            group.sessions = group.sessions.map { retitled($0, ifID: session.id, to: title) }
+            return group
+        }
+        if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
+            store.rename(attached.id, to: title)
+        }
+        scheduleRefresh()
+    }
+
+    private func retitled(_ session: OpencodeSession, ifID id: String, to title: String) -> OpencodeSession {
+        guard session.id == id else { return session }
+        var copy = session
+        copy.title = title
+        return copy
+    }
 }

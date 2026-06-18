@@ -14,6 +14,9 @@ struct RootView: View {
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
     @State private var pendingDelete: OpencodeSession?
+    @State private var renamingOpencode: OpencodeSession?
+    @State private var opencodeRenameText: String = ""
+    @State private var collapsedGroups: Set<String> = []
 
     var body: some View {
         NavigationSplitView {
@@ -48,6 +51,11 @@ struct RootView: View {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: { session in
             Text("“\(session.title ?? session.id)” will be permanently removed from opencode.")
+        }
+        .alert("Rename opencode session", isPresented: opencodeRenameBinding) {
+            TextField("Title", text: $opencodeRenameText)
+            Button("Cancel", role: .cancel) { renamingOpencode = nil }
+            Button("Save") { commitOpencodeRename() }
         }
     }
 
@@ -88,7 +96,7 @@ struct RootView: View {
             }
 
             ForEach(model.opencodeGroups) { group in
-                Section(group.displayName) {
+                Section(group.displayName, isExpanded: expansionBinding(for: group.directory)) {
                     ForEach(group.sessions) { ocSession in
                         Button {
                             model.openOpencodeSession(ocSession)
@@ -98,6 +106,7 @@ struct RootView: View {
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button("Open") { model.openOpencodeSession(ocSession) }
+                            Button("Rename…") { beginOpencodeRename(ocSession) }
                             Divider()
                             Button("Delete", role: .destructive) {
                                 pendingDelete = ocSession
@@ -134,6 +143,33 @@ struct RootView: View {
 
     private var deleteConfirmBinding: Binding<Bool> {
         Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
+    private var opencodeRenameBinding: Binding<Bool> {
+        Binding(get: { renamingOpencode != nil }, set: { if !$0 { renamingOpencode = nil } })
+    }
+
+    private func expansionBinding(for directory: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedGroups.contains(directory) },
+            set: { expanded in
+                if expanded { collapsedGroups.remove(directory) } else { collapsedGroups.insert(directory) }
+            }
+        )
+    }
+
+    private func beginOpencodeRename(_ session: OpencodeSession) {
+        renamingOpencode = session
+        opencodeRenameText = session.title ?? ""
+    }
+
+    private func commitOpencodeRename() {
+        guard let session = renamingOpencode else { return }
+        let trimmed = opencodeRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            Task { await model.renameOpencodeSession(session, to: trimmed) }
+        }
+        renamingOpencode = nil
     }
 
     private func beginRename(_ session: TerminalSession) {

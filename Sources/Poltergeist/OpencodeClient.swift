@@ -78,4 +78,27 @@ struct OpencodeClient: Sendable {
             throw URLError(.badServerResponse)
         }
     }
+
+    /// Renames a session (PATCH /session/:id with { title }).
+    func updateSessionTitle(id: String, title: String, directory: String?) async throws {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("session").appendingPathComponent(id),
+            resolvingAgainstBaseURL: false
+        )
+        if let directory {
+            components?.queryItems = [URLQueryItem(name: "directory", value: directory)]
+        }
+        guard let url = components?.url else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["title": title])
+        request.timeoutInterval = 10
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+    }
 }
