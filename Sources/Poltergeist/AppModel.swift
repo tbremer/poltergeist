@@ -146,6 +146,10 @@ final class AppModel: ObservableObject {
     private func reloadConfig() {
         let newConfig = AppConfig.load()
         guard newConfig != appliedConfig else { return }
+        applyConfig(newConfig)
+    }
+
+    private func applyConfig(_ newConfig: AppConfig) {
         appliedConfig = newConfig
 
         let themeDefinition = newConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
@@ -157,6 +161,14 @@ final class AppModel: ObservableObject {
         for session in store.sessions {
             session.applyAppearance(theme: terminalTheme, fontConfig: fontConfig)
         }
+    }
+
+    /// Picks a theme by name (nil = default): persists to config.json + applies live.
+    func selectTheme(_ name: String?) {
+        var newConfig = appliedConfig
+        newConfig.theme = name
+        AppConfig.save(newConfig)
+        applyConfig(newConfig)
     }
 
     // MARK: - Refresh scheduling

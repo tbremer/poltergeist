@@ -33,4 +33,11 @@ struct AppConfig: Codable, Equatable {
         else { return AppConfig() }
         return config
     }
+
+    static func save(_ config: AppConfig) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(config) else { return }
+        try? data.write(to: AppPaths.configFile, options: .atomic)
+    }
 }

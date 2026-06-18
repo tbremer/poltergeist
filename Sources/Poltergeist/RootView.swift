@@ -17,6 +17,7 @@ struct RootView: View {
     @State private var pendingDelete: OpencodeSession?
     @State private var renamingOpencode: OpencodeSession?
     @State private var opencodeRenameText: String = ""
+    @State private var showThemePicker = false
 
     var body: some View {
         NavigationSplitView {
@@ -138,6 +139,15 @@ struct RootView: View {
                 }
                 .help("New Terminal (⌘T)")
             }
+            ToolbarItem {
+                Button { showThemePicker = true } label: {
+                    Image(systemName: "paintpalette")
+                }
+                .help("Theme")
+                .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
+                    ThemePicker(model: model, isPresented: $showThemePicker)
+                }
+            }
         }
     }
 
@@ -234,6 +244,75 @@ private struct TerminalDetailView: View {
             }
             .onAppear { focusedSession = store.selectedID }
         }
+    }
+}
+
+/// Searchable theme picker (popover). Selecting persists to config.json and
+/// applies live.
+private struct ThemePicker: View {
+    @ObservedObject var model: AppModel
+    @Binding var isPresented: Bool
+    @State private var query = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Search themes…", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+            Divider()
+            List {
+                Button {
+                    model.selectTheme(nil)
+                    isPresented = false
+                } label: {
+                    HStack {
+                        Text("Default")
+                        Spacer()
+                        if model.currentTheme == nil {
+                            Image(systemName: "checkmark").foregroundStyle(.tint)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                ForEach(GhosttyThemeCatalog.search(query)) { theme in
+                    Button {
+                        model.selectTheme(theme.name)
+                        isPresented = false
+                    } label: {
+                        ThemeSwatchRow(theme: theme, selected: theme.name == model.currentTheme?.name)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(.plain)
+        }
+        .frame(width: 300, height: 420)
+    }
+}
+
+/// One theme row: a background/foreground swatch + name + selection check.
+private struct ThemeSwatchRow: View {
+    let theme: GhosttyThemeDefinition
+    let selected: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(hexRGB: theme.background) ?? .gray)
+                .frame(width: 24, height: 16)
+                .overlay(
+                    Text("Aa")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color(hexRGB: theme.foreground) ?? .white)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary, lineWidth: 0.5))
+            Text(theme.name).lineLimit(1)
+            Spacer(minLength: 4)
+            if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
+        }
+        .contentShape(Rectangle())
     }
 }
 
