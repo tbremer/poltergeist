@@ -11,7 +11,6 @@ import GhosttyTheme
 struct RootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: SessionStore
-    @Environment(\.colorScheme) private var systemScheme
 
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
@@ -29,7 +28,7 @@ struct RootView: View {
                 .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
                 .navigationSubtitle(subtitle)
         }
-        .preferredColorScheme(model.forcedScheme)
+        .preferredColorScheme(model.appearanceScheme)
         .alert("Rename Session", isPresented: renamingBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingID = nil }
@@ -158,17 +157,9 @@ struct RootView: View {
         } ?? ""
     }
 
-    /// Effective appearance: forced by a single theme, else follows the system.
-    private var activeScheme: ColorScheme { model.forcedScheme ?? systemScheme }
-
-    /// Theme definition for the active appearance (light vs dark slot).
-    private var activeThemeDef: GhosttyThemeDefinition? {
-        activeScheme == .dark ? model.darkThemeDef : model.lightThemeDef
-    }
-
     /// Sidebar tint derived from the active theme's background (nil = default chrome).
     private var themeBackground: Color? {
-        activeThemeDef.flatMap { Color(hexRGB: $0.background) }
+        model.activeThemeDef.flatMap { Color(hexRGB: $0.background) }
     }
 
     // MARK: - Rename
@@ -283,7 +274,6 @@ private struct HoverHighlightButtonStyle: ButtonStyle {
 /// persists to config.json and applies live; stays open so both can be set.
 private struct ThemePicker: View {
     @ObservedObject var model: AppModel
-    @Environment(\.colorScheme) private var systemScheme
     @State private var query = ""
     @State private var slot: ThemeSlot = .dark
 
@@ -333,7 +323,7 @@ private struct ThemePicker: View {
             .listStyle(.plain)
         }
         .frame(width: 300, height: 460)
-        .onAppear { slot = systemScheme == .dark ? .dark : .light }
+        .onAppear { slot = model.systemIsDark ? .dark : .light }
     }
 }
 

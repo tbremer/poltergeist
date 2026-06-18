@@ -18,8 +18,15 @@ final class AppModel: ObservableObject {
     /// Resolved theme per appearance (applied to terminals + window chrome).
     @Published private(set) var lightThemeDef: GhosttyThemeDefinition?
     @Published private(set) var darkThemeDef: GhosttyThemeDefinition?
-    /// Non-nil only in single-theme mode: forces the window appearance.
-    @Published private(set) var forcedScheme: ColorScheme?
+    /// True when macOS is in Dark mode (selects which slot is active).
+    @Published private(set) var systemIsDark = false
+
+    /// The theme in effect right now (for the current system appearance).
+    var activeThemeDef: GhosttyThemeDefinition? { systemIsDark ? darkThemeDef : lightThemeDef }
+
+    /// Window appearance forced to match the active theme, so text + macOS
+    /// controls stay readable (light text on a dark theme, etc).
+    var appearanceScheme: ColorScheme? { activeThemeDef.map { $0.isDark ? .dark : .light } }
 
     /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
@@ -52,6 +59,7 @@ final class AppModel: ObservableObject {
     private var appliedConfig = AppConfig()
     private var configWatcher: ConfigWatcher?
     private var configReloadWork: DispatchWorkItem?
+    private var appearanceObserver: NSObjectProtocol?
 
     private var homeDirectory: String { FileManager.default.homeDirectoryForCurrentUser.path }
 
@@ -61,10 +69,12 @@ final class AppModel: ObservableObject {
 
         let appConfig = AppConfig.load()
         appliedConfig = appConfig
-        let resolved = Self.resolveThemes(appConfig)
-        lightThemeDef = resolved.light
-        darkThemeDef = resolved.dark
-        forcedScheme = resolved.forced
+        let isDark = Self.osIsDark()
+        systemIsDark = isDark
+        let defs = Self.resolveDefs(appConfig)
+        lightThemeDef = defs.light
+        darkThemeDef = defs.dark
+        let activeDef = isDark ? defs.dark : defs.light
 
         // Point every terminal at the (soon-to-be-ready) shared server.
         var overrides: [String: String] = [:]
@@ -74,7 +84,7 @@ final class AppModel: ObservableObject {
         store = SessionStore(
             environmentOverrides: overrides,
             config: appConfig,
-            terminalTheme: resolved.terminal
+            terminalTheme: Self.terminalTheme(for: activeDef)
         )
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
@@ -139,6 +149,19 @@ final class AppModel: ObservableObject {
         }
         watcher.start()
         configWatcher = watcher
+
+        // React to macOS Dark/Light changes: re-pick the active theme + appearance.
+        appearanceObserver = DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.systemIsDark = Self.osIsDark()
+                self.applyActiveAppearance()
+            }
+        }
     }
 
     // MARK: - Live config reload
@@ -163,15 +186,21 @@ final class AppModel: ObservableObject {
 
     private func applyConfig(_ newConfig: AppConfig) {
         appliedConfig = newConfig
-        let resolved = Self.resolveThemes(newConfig)
-        lightThemeDef = resolved.light
-        darkThemeDef = resolved.dark
-        forcedScheme = resolved.forced
+        let defs = Self.resolveDefs(newConfig)
+        lightThemeDef = defs.light
+        darkThemeDef = defs.dark
+        applyActiveAppearance()
+    }
 
-        let fontConfig = newConfig.fontConfiguration()
-        store.updateAppearance(config: newConfig, terminalTheme: resolved.terminal)
+    /// Applies the active theme (for the current system appearance) to every
+    /// terminal + the store. Chrome follows via `activeThemeDef`/`appearanceScheme`.
+    private func applyActiveAppearance() {
+        let activeDef = systemIsDark ? darkThemeDef : lightThemeDef
+        let terminalTheme = Self.terminalTheme(for: activeDef)
+        let fontConfig = appliedConfig.fontConfiguration()
+        store.updateAppearance(config: appliedConfig, terminalTheme: terminalTheme)
         for session in store.sessions {
-            session.applyAppearance(theme: resolved.terminal, fontConfig: fontConfig)
+            session.applyAppearance(theme: terminalTheme, fontConfig: fontConfig)
         }
     }
 
@@ -186,25 +215,23 @@ final class AppModel: ObservableObject {
         applyConfig(newConfig)
     }
 
-    private static func resolveThemes(
+    private static func resolveDefs(
         _ config: AppConfig
-    ) -> (light: GhosttyThemeDefinition?, dark: GhosttyThemeDefinition?, forced: ColorScheme?, terminal: TerminalTheme) {
-        let lightDef = (config.lightTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
-        let darkDef = (config.darkTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
-        let perAppearance = config.lightTheme != nil || config.darkTheme != nil
-        let forced: ColorScheme? = perAppearance
-            ? nil
-            : (config.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }).map { $0.isDark ? .dark : .light }
-        let terminal: TerminalTheme
-        if lightDef == nil, darkDef == nil {
-            terminal = .default
-        } else {
-            terminal = TerminalTheme(
-                light: lightDef?.toTerminalConfiguration() ?? TerminalConfiguration(),
-                dark: darkDef?.toTerminalConfiguration() ?? TerminalConfiguration()
-            )
-        }
-        return (lightDef, darkDef, forced, terminal)
+    ) -> (light: GhosttyThemeDefinition?, dark: GhosttyThemeDefinition?) {
+        let light = (config.lightTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        let dark = (config.darkTheme ?? config.theme).flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        return (light, dark)
+    }
+
+    /// A TerminalTheme that shows `def` regardless of the surface's appearance.
+    private static func terminalTheme(for def: GhosttyThemeDefinition?) -> TerminalTheme {
+        guard let def else { return .default }
+        let config = def.toTerminalConfiguration()
+        return TerminalTheme(light: config, dark: config)
+    }
+
+    private static func osIsDark() -> Bool {
+        UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?.lowercased().contains("dark") ?? false
     }
 
     // MARK: - Refresh scheduling
