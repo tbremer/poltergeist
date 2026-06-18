@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var refreshWork: DispatchWorkItem?
     private var refreshTimer: Timer?
+    private var refreshEnabled = false
 
     init() {
         let server = OpencodeServerManager()
@@ -75,9 +76,22 @@ final class AppModel: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
+
+        // Defer the first opencode load so it doesn't contend with terminal
+        // startup on the main thread. GhosttyKit answers the shell's startup
+        // capability queries (OSC color, Kitty graphics) on a main-thread render
+        // tick; if our fan-out hogs main during that window, the replies arrive
+        // late and leak to the prompt as garbled text.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.refreshEnabled = true
+                self?.scheduleRefresh()
+            }
+        }
     }
 
     private func scheduleRefresh() {
+        guard refreshEnabled else { return }
         refreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
