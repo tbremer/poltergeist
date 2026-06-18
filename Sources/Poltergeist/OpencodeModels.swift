@@ -41,4 +41,10 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
     }
 
     var updatedAt: Double { time?.updated ?? 0 }
+
+    /// Lightweight "active" indicator: updated within the last several seconds.
+    var isRecentlyActive: Bool {
+        guard let updated = time?.updated else { return false }
+        return Date().timeIntervalSince1970 * 1000 - updated < 10_000
+    }
 }

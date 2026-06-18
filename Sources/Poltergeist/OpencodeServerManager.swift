@@ -52,6 +52,11 @@ final class OpencodeServerManager: ObservableObject {
         }
     }
 
+    var isReady: Bool {
+        if case .running = status { return true }
+        return false
+    }
+
     func start() {
         guard let executablePath, let port, let baseURL, process == nil else { return }
         status = .starting

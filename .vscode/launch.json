@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poltergeist}",
+            "name": "Debug Poltergeist",
+            "target": "Poltergeist",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Poltergeist"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:poltergeist}",
+            "name": "Release Poltergeist",
+            "target": "Poltergeist",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Poltergeist"
+        }
+    ]
+}
