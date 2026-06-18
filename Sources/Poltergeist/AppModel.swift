@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import GhosttyTheme
 
 /// Top-level app state: owns the opencode server, the terminal session store,
 /// and the live opencode session list shown in the sidebar.
@@ -8,6 +9,9 @@ import AppKit
 final class AppModel: ObservableObject {
     let server: OpencodeServerManager
     let store: SessionStore
+
+    /// The active color theme (from config.json), applied to terminals + chrome.
+    let currentTheme: GhosttyThemeDefinition?
 
     /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
@@ -43,12 +47,20 @@ final class AppModel: ObservableObject {
         let server = OpencodeServerManager()
         self.server = server
 
+        let appConfig = AppConfig.load()
+        let theme = appConfig.theme.flatMap { GhosttyThemeCatalog.theme(named: $0) }
+        currentTheme = theme
+
         // Point every terminal at the (soon-to-be-ready) shared server.
         var overrides: [String: String] = [:]
         if let base = server.baseURL {
             overrides["OPENCODE_BASE_URL"] = base.absoluteString
         }
-        store = SessionStore(environmentOverrides: overrides, config: AppConfig.load())
+        store = SessionStore(
+            environmentOverrides: overrides,
+            config: appConfig,
+            terminalTheme: theme?.toTerminalTheme()
+        )
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
 

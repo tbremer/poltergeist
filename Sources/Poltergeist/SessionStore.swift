@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import GhosttyTerminal
 
 /// Owns the set of terminal sessions and the current selection, and persists
 /// session metadata across launches.
@@ -18,12 +19,18 @@ final class SessionStore: ObservableObject {
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
     private let config: AppConfig
+    private let terminalTheme: TerminalTheme?
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
 
-    init(environmentOverrides: [String: String] = [:], config: AppConfig = AppConfig()) {
+    init(
+        environmentOverrides: [String: String] = [:],
+        config: AppConfig = AppConfig(),
+        terminalTheme: TerminalTheme? = nil
+    ) {
         self.environmentOverrides = environmentOverrides
         self.config = config
+        self.terminalTheme = terminalTheme
         restoreOrCreate()
 
         // Scrollback persistence was removed; clean up any leftover files.
@@ -67,7 +74,8 @@ final class SessionStore: ObservableObject {
             command: command,
             opencodeSessionID: opencodeSessionID,
             fontFamily: config.fontFamily,
-            fontSize: config.effectiveFontSize
+            fontSize: config.effectiveFontSize,
+            theme: terminalTheme ?? .default
         )
         nextOrdinal += 1
         sessions.append(session)
@@ -137,7 +145,8 @@ final class SessionStore: ObservableObject {
                 createdAt: ps.createdAt,
                 environmentOverrides: environmentOverrides,
                 fontFamily: config.fontFamily,
-                fontSize: config.effectiveFontSize
+                fontSize: config.effectiveFontSize,
+                theme: terminalTheme ?? .default
             )
             sessions.append(session)
         }

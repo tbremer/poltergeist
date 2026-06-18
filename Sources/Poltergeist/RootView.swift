@@ -1,5 +1,6 @@
 import SwiftUI
 import GhosttyTerminal
+import GhosttyTheme
 
 /// The editor-style shell: a sessions sidebar + a live terminal detail pane.
 ///
@@ -20,11 +21,13 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
+                .modifier(ThemedSidebarBackground(color: themeBackground))
         } detail: {
             TerminalDetailView(store: store)
                 .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
                 .navigationSubtitle(subtitle)
         }
+        .preferredColorScheme(themeScheme)
         .alert("Rename Session", isPresented: renamingBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingID = nil }
@@ -144,6 +147,17 @@ struct RootView: View {
         } ?? ""
     }
 
+    /// Window light/dark appearance derived from the active theme (nil = follow system).
+    private var themeScheme: ColorScheme? {
+        guard let theme = model.currentTheme else { return nil }
+        return theme.isDark ? .dark : .light
+    }
+
+    /// Sidebar tint derived from the active theme's background (nil = default chrome).
+    private var themeBackground: Color? {
+        model.currentTheme.flatMap { Color(hexRGB: $0.background) }
+    }
+
     // MARK: - Rename
 
     private var renamingBinding: Binding<Bool> {
@@ -219,6 +233,22 @@ private struct TerminalDetailView: View {
                 focusedSession = newValue
             }
             .onAppear { focusedSession = store.selectedID }
+        }
+    }
+}
+
+/// Tints the sidebar to the theme background (and hides the default material)
+/// when a theme is active; otherwise leaves the default chrome untouched.
+private struct ThemedSidebarBackground: ViewModifier {
+    let color: Color?
+
+    func body(content: Content) -> some View {
+        if let color {
+            content
+                .scrollContentBackground(.hidden)
+                .background(color)
+        } else {
+            content
         }
     }
 }

@@ -22,6 +22,7 @@ let package = Package(
             name: "Poltergeist",
             dependencies: [
                 .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                .product(name: "GhosttyTheme", package: "libghostty-spm"),
                 "CPty"
             ],
             path: "Sources/Poltergeist"

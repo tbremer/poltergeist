@@ -5,11 +5,14 @@ import Foundation
 ///
 /// Example:
 /// ```json
-/// { "fontFamily": "JetBrains Mono", "fontSize": 13 }
+/// { "fontFamily": "JetBrains Mono", "fontSize": 13, "theme": "Aardvark Blue" }
 /// ```
+///
+/// `theme` is a name from the GhosttyTheme catalog (iTerm2 color schemes).
 struct AppConfig: Codable {
     var fontFamily: String?
     var fontSize: Float?
+    var theme: String?
 
     var effectiveFontSize: Float { fontSize ?? 14 }
 

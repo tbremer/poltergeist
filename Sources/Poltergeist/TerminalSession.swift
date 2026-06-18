@@ -39,7 +39,8 @@ final class TerminalSession: ObservableObject, Identifiable {
         command: [String]? = nil,
         opencodeSessionID: String? = nil,
         fontFamily: String? = nil,
-        fontSize: Float = 14
+        fontSize: Float = 14,
+        theme: TerminalTheme = .default
     ) {
         let pty = PTYProcess()
 
@@ -100,7 +101,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         }
         terminalConfiguration = terminalConfiguration.fontSize(fontSize)
 
-        let state = TerminalViewState(terminalConfiguration: terminalConfiguration)
+        let state = TerminalViewState(theme: theme, terminalConfiguration: terminalConfiguration)
         state.configuration = TerminalSurfaceOptions(
             backend: .inMemory(io),
             fontSize: fontSize,
