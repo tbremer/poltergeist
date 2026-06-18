@@ -10,6 +10,10 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
+# Editor / IDE
+.vscode/
+.idea/
+
 # Poltergeist runtime data (sessions + scrollback, added in later milestones)
 /Application Support/
 *.log
