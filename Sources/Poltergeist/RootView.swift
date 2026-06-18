@@ -10,7 +10,6 @@ import GhosttyTerminal
 struct RootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: SessionStore
-    @FocusState private var focusedSession: TerminalSession.ID?
 
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
@@ -20,7 +19,7 @@ struct RootView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            detail
+            TerminalDetailView(store: store)
                 .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
                 .navigationSubtitle(subtitle)
         }
@@ -81,12 +80,16 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .disabled(!model.server.isReady)
 
-                if model.opencodeSessions.isEmpty {
+                if model.opencodeGroups.isEmpty {
                     Text(model.server.statusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.opencodeSessions) { ocSession in
+                }
+            }
+
+            ForEach(model.opencodeGroups) { group in
+                Section(group.displayName) {
+                    ForEach(group.sessions) { ocSession in
                         Button {
                             model.openOpencodeSession(ocSession)
                         } label: {
@@ -117,37 +120,6 @@ struct RootView: View {
         }
     }
 
-    // MARK: - Detail
-
-    @ViewBuilder
-    private var detail: some View {
-        if store.sessions.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.secondary)
-                Text("No sessions").font(.title3)
-                Text("Press ⌘T to create one").foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            // Keep every surface in the hierarchy so background sessions keep
-            // rendering/receiving; only the selected one is visible + focused.
-            ZStack {
-                ForEach(store.sessions) { session in
-                    TerminalSurfaceView(context: session.state)
-                        .terminalFocused($focusedSession, equals: session.id)
-                        .opacity(session.id == store.selectedID ? 1 : 0)
-                        .allowsHitTesting(session.id == store.selectedID)
-                }
-            }
-            .onChange(of: store.selectedID) { _, newValue in
-                focusedSession = newValue
-            }
-            .onAppear { focusedSession = store.selectedID }
-        }
-    }
-
     private var subtitle: String {
         store.selectedSession?.state.workingDirectory.map { dir in
             (dir as NSString).abbreviatingWithTildeInPath
@@ -175,6 +147,42 @@ struct RootView: View {
             store.rename(id, to: trimmed.isEmpty ? nil : trimmed)
         }
         renamingID = nil
+    }
+}
+
+/// The terminal area. Observes only `store`, so opencode/server refreshes (the
+/// 4s timer + SSE) don't re-render the live terminal surfaces — which was
+/// stealing keyboard focus mid-keystroke.
+private struct TerminalDetailView: View {
+    @ObservedObject var store: SessionStore
+    @FocusState private var focusedSession: TerminalSession.ID?
+
+    var body: some View {
+        if store.sessions.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.secondary)
+                Text("No sessions").font(.title3)
+                Text("Press ⌘T to create one").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            // Keep every surface in the hierarchy so background sessions keep
+            // rendering/receiving; only the selected one is visible + focused.
+            ZStack {
+                ForEach(store.sessions) { session in
+                    TerminalSurfaceView(context: session.state)
+                        .terminalFocused($focusedSession, equals: session.id)
+                        .opacity(session.id == store.selectedID ? 1 : 0)
+                        .allowsHitTesting(session.id == store.selectedID)
+                }
+            }
+            .onChange(of: store.selectedID) { _, newValue in
+                focusedSession = newValue
+            }
+            .onAppear { focusedSession = store.selectedID }
+        }
     }
 }
 

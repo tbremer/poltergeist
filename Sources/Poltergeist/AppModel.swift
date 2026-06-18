@@ -12,6 +12,9 @@ final class AppModel: ObservableObject {
     /// opencode sessions for the currently selected terminal's directory.
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
 
+    /// All opencode sessions grouped by working directory (active dir first).
+    @Published private(set) var opencodeGroups: [OpencodeProjectGroup] = []
+
     /// Lookup of opencode sessions by id (accumulated across refreshes) so
     /// terminal rows can show metadata even when not in the current dir list.
     @Published private(set) var opencodeByID: [String: OpencodeSession] = [:]
@@ -68,7 +71,8 @@ final class AppModel: ObservableObject {
         }
 
         // Periodic refresh keeps cost/tokens and the activity indicator current.
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+        // Gentle cadence since each refresh fans out across all projects.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
     }
@@ -87,12 +91,38 @@ final class AppModel: ObservableObject {
 
     private func refresh() async {
         guard let client else { return }
-        let directory = store.selectedSession?.currentDirectory
-        guard let list = try? await client.listSessions(directory: directory) else { return }
-        opencodeSessions = list
-            .filter { $0.parentID == nil }
-            .sorted { $0.updatedAt > $1.updatedAt }
-        for session in list { opencodeByID[session.id] = session }
+
+        // Enumerate all projects, then fetch each project's sessions concurrently.
+        let projects = (try? await client.listProjects()) ?? []
+        var directories = Set(projects.compactMap(\.worktree))
+        directories.insert(FileManager.default.homeDirectoryForCurrentUser.path) // global project
+        if let active = store.selectedSession?.currentDirectory { directories.insert(active) }
+
+        var byID: [String: OpencodeSession] = [:]
+        await withTaskGroup(of: [OpencodeSession].self) { group in
+            for directory in directories {
+                group.addTask { (try? await client.listSessions(directory: directory)) ?? [] }
+            }
+            for await sessions in group {
+                for session in sessions where session.parentID == nil {
+                    byID[session.id] = session
+                }
+            }
+        }
+
+        let tops = Array(byID.values)
+        let activeDir = store.selectedSession?.currentDirectory
+        var groups = Dictionary(grouping: tops, by: { $0.directory ?? "—" })
+            .map { OpencodeProjectGroup(directory: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
+        groups.sort { a, b in
+            if a.directory == activeDir { return true }
+            if b.directory == activeDir { return false }
+            return a.mostRecent > b.mostRecent
+        }
+
+        opencodeGroups = groups
+        opencodeSessions = tops.sorted { $0.updatedAt > $1.updatedAt }
+        for session in tops { opencodeByID[session.id] = session }
     }
 
     /// Opens an opencode server session in a new terminal attached to our server.
@@ -135,6 +165,11 @@ final class AppModel: ObservableObject {
         try? await client.deleteSession(id: session.id, directory: session.directory)
         opencodeByID[session.id] = nil
         opencodeSessions.removeAll { $0.id == session.id }
+        opencodeGroups = opencodeGroups.compactMap { group in
+            var group = group
+            group.sessions.removeAll { $0.id == session.id }
+            return group.sessions.isEmpty ? nil : group
+        }
         scheduleRefresh()
     }
 }

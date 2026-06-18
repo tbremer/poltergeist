@@ -48,3 +48,23 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
         return Date().timeIntervalSince1970 * 1000 - updated < 10_000
     }
 }
+
+/// A project as returned by GET /project.
+struct OpencodeProject: Codable, Identifiable, Hashable {
+    let id: String
+    var worktree: String?
+}
+
+/// Sessions grouped by working directory for the sidebar.
+struct OpencodeProjectGroup: Identifiable, Hashable {
+    let directory: String
+    var sessions: [OpencodeSession]
+
+    var id: String { directory }
+
+    var displayName: String {
+        directory == "—" ? "Unknown" : (directory as NSString).abbreviatingWithTildeInPath
+    }
+
+    var mostRecent: Double { sessions.map(\.updatedAt).max() ?? 0 }
+}
