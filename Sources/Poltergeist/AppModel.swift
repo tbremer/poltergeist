@@ -9,22 +9,35 @@ final class AppModel: ObservableObject {
     let server: OpencodeServerManager
     let store: SessionStore
 
-    /// opencode sessions for the currently selected terminal's directory.
+    /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
 
     /// All opencode sessions grouped by working directory (active dir first).
     @Published private(set) var opencodeGroups: [OpencodeProjectGroup] = []
 
-    /// Lookup of opencode sessions by id (accumulated across refreshes) so
-    /// terminal rows can show metadata even when not in the current dir list.
+    /// Lookup of opencode sessions by id so terminal rows can show metadata.
     @Published private(set) var opencodeByID: [String: OpencodeSession] = [:]
 
     private let client: OpencodeClient?
     private var eventStream: OpencodeEventStream?
     private var cancellables = Set<AnyCancellable>()
-    private var refreshWork: DispatchWorkItem?
-    private var refreshTimer: Timer?
+
+    private var lightWork: DispatchWorkItem?
+    private var lightTimer: Timer?
+    private var fullTimer: Timer?
     private var refreshEnabled = false
+
+    /// Project worktrees discovered by the full refresh, cached so light
+    /// refreshes don't re-enumerate every time.
+    private var cachedWorktrees: Set<String> = []
+
+    /// Suppress refreshes until this time. Set briefly when a terminal spawns so
+    /// the new shell's startup capability queries get the main thread — otherwise
+    /// our fan-out delays GhosttyKit's replies and they leak to the prompt.
+    private var refreshQuietUntil = Date.distantPast
+    private var knownSessionCount = 0
+
+    private var homeDirectory: String { FileManager.default.homeDirectoryForCurrentUser.path }
 
     init() {
         let server = OpencodeServerManager()
@@ -36,27 +49,28 @@ final class AppModel: ObservableObject {
             overrides["OPENCODE_BASE_URL"] = base.absoluteString
         }
         store = SessionStore(environmentOverrides: overrides)
-
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
+        knownSessionCount = store.sessions.count
 
         server.start()
 
         if let base = server.baseURL {
             let stream = OpencodeEventStream(baseURL: base)
-            stream.onEvent = { [weak self] in self?.scheduleRefresh() }
+            stream.onEvent = { [weak self] in self?.scheduleLightRefresh() }
             stream.start()
             eventStream = stream
         }
 
-        // Refresh the opencode list when the active terminal (its directory)
-        // changes, and when the server becomes ready.
         store.$selectedID
-            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .sink { [weak self] _ in self?.scheduleLightRefresh() }
+            .store(in: &cancellables)
+        // A new terminal means a shell is about to spawn and query the terminal;
+        // keep the main thread free briefly so the replies aren't delayed.
+        store.$sessions
+            .sink { [weak self] sessions in self?.noteSessionCount(sessions.count) }
             .store(in: &cancellables)
         server.$status
-            .sink { [weak self] status in
-                if status == .running { self?.scheduleRefresh() }
-            }
+            .sink { [weak self] status in if status == .running { self?.scheduleLightRefresh() } }
             .store(in: &cancellables)
         // Surface server status changes (starting → running) to the UI.
         server.objectWillChange
@@ -71,47 +85,88 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { self?.server.stop() }
         }
 
-        // Periodic refresh keeps cost/tokens and the activity indicator current.
-        // Gentle cadence since each refresh fans out across all projects.
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleRefresh() }
+        // Frequent, cheap refresh of the active project only.
+        lightTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleLightRefresh() }
+        }
+        // Occasional full sweep across all projects (also prunes deleted sessions).
+        fullTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.requestFullRefresh() }
         }
 
-        // Defer the first opencode load so it doesn't contend with terminal
-        // startup on the main thread. GhosttyKit answers the shell's startup
-        // capability queries (OSC color, Kitty graphics) on a main-thread render
-        // tick; if our fan-out hogs main during that window, the replies arrive
-        // late and leak to the prompt as garbled text.
+        // Defer the first load so it doesn't contend with terminal startup on the
+        // main thread (late capability-query replies leak to the prompt as garble).
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             MainActor.assumeIsolated {
                 self?.refreshEnabled = true
-                self?.scheduleRefresh()
+                self?.requestFullRefresh()
             }
         }
     }
 
-    private func scheduleRefresh() {
+    // MARK: - Refresh scheduling
+
+    private func noteSessionCount(_ count: Int) {
+        if count > knownSessionCount {
+            refreshQuietUntil = Date().addingTimeInterval(1.5)
+        }
+        knownSessionCount = count
+    }
+
+    private var quietDelay: TimeInterval { max(0.3, refreshQuietUntil.timeIntervalSinceNow) }
+
+    private func scheduleLightRefresh() {
         guard refreshEnabled else { return }
-        refreshWork?.cancel()
+        lightWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                Task { await self.refresh() }
+                Task { await self.lightRefresh() }
             }
         }
-        refreshWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        lightWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + quietDelay, execute: work)
     }
 
-    private func refresh() async {
-        guard let client else { return }
+    private func requestFullRefresh() {
+        guard refreshEnabled else { return }
+        // Skip while quiet; a later sweep/light refresh will catch up.
+        guard refreshQuietUntil.timeIntervalSinceNow <= 0 else { return }
+        Task { await fullRefresh() }
+    }
 
-        // Enumerate all projects, then fetch each project's sessions concurrently.
+    // MARK: - Refresh implementations
+
+    /// Light: only the active terminal's project (+ attached terminals + home).
+    /// Upserts into the cache so other groups are left intact.
+    private func lightRefresh() async {
+        var directories: Set<String> = [homeDirectory]
+        if let active = store.selectedSession?.currentDirectory { directories.insert(active) }
+        for session in store.sessions where session.opencodeSessionID != nil {
+            directories.insert(session.currentDirectory)
+        }
+        let fetched = await fetchSessions(directories: directories)
+        for (id, session) in fetched { opencodeByID[id] = session }
+        rebuildGroups()
+    }
+
+    /// Full: enumerate all projects and replace the cache (also prunes deletions).
+    private func fullRefresh() async {
+        guard let client else { return }
         let projects = (try? await client.listProjects()) ?? []
-        var directories = Set(projects.compactMap(\.worktree))
-        directories.insert(FileManager.default.homeDirectoryForCurrentUser.path) // global project
+        cachedWorktrees = Set(projects.compactMap(\.worktree))
+
+        var directories = cachedWorktrees
+        directories.insert(homeDirectory)
         if let active = store.selectedSession?.currentDirectory { directories.insert(active) }
 
+        let fetched = await fetchSessions(directories: directories)
+        opencodeByID = fetched
+        rebuildGroups()
+    }
+
+    private func fetchSessions(directories: Set<String>) async -> [String: OpencodeSession] {
+        guard let client else { return [:] }
         var byID: [String: OpencodeSession] = [:]
         await withTaskGroup(of: [OpencodeSession].self) { group in
             for directory in directories {
@@ -123,8 +178,11 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        return byID
+    }
 
-        let tops = Array(byID.values)
+    private func rebuildGroups() {
+        let tops = Array(opencodeByID.values)
         let activeDir = store.selectedSession?.currentDirectory
         var groups = Dictionary(grouping: tops, by: { $0.directory ?? "—" })
             .map { OpencodeProjectGroup(directory: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
@@ -133,11 +191,11 @@ final class AppModel: ObservableObject {
             if b.directory == activeDir { return false }
             return a.mostRecent > b.mostRecent
         }
-
         opencodeGroups = groups
         opencodeSessions = tops.sorted { $0.updatedAt > $1.updatedAt }
-        for session in tops { opencodeByID[session.id] = session }
     }
+
+    // MARK: - Actions
 
     /// Opens an opencode server session in a new terminal attached to our server.
     /// If a terminal is already attached to this session, selects it instead.
@@ -161,12 +219,11 @@ final class AppModel: ObservableObject {
     /// opens it in an attached terminal.
     func newOpencodeSession() async {
         guard let client else { return }
-        let directory = store.selectedSession?.currentDirectory
-            ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let directory = store.selectedSession?.currentDirectory ?? homeDirectory
         guard let created = try? await client.createSession(directory: directory) else { return }
         opencodeByID[created.id] = created
         openOpencodeSession(created)
-        scheduleRefresh()
+        scheduleLightRefresh()
     }
 
     /// Permanently deletes an opencode session from the server, closing any
@@ -184,7 +241,7 @@ final class AppModel: ObservableObject {
             group.sessions.removeAll { $0.id == session.id }
             return group.sessions.isEmpty ? nil : group
         }
-        scheduleRefresh()
+        scheduleLightRefresh()
     }
 
     /// Renames an opencode session server-side (PATCH), with an optimistic
@@ -206,7 +263,7 @@ final class AppModel: ObservableObject {
         if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
             store.rename(attached.id, to: title)
         }
-        scheduleRefresh()
+        scheduleLightRefresh()
     }
 
     private func retitled(_ session: OpencodeSession, ifID id: String, to title: String) -> OpencodeSession {
