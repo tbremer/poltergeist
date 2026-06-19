@@ -366,7 +366,15 @@ private struct SessionRow: View {
             Image(systemName: isOpencode ? "sparkles" : "terminal")
                 .foregroundStyle(isOpencode ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.displayName).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(session.displayName).lineLimit(1)
+                    if opencode?.isStale == true {
+                        Image(systemName: "moon.zzz.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("No activity in over 30 days")
+                    }
+                }
                 if let opencode {
                     HStack(spacing: 5) {
                         if opencode.isRecentlyActive {
@@ -374,6 +382,7 @@ private struct SessionRow: View {
                         }
                         if let model = opencode.model?.id { Text(model) }
                         if let cost = opencode.cost, cost > 0 { Text(String(format: "$%.2f", cost)) }
+                        if let updated = opencode.updatedRelative { Text(updated) }
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -390,9 +399,18 @@ private struct OpencodeRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(session.title ?? session.id)
-                .font(.callout)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(session.title ?? session.id)
+                    .font(.callout)
+                    .lineLimit(1)
+                if session.isStale {
+                    Spacer(minLength: 4)
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("No activity in over 30 days")
+                }
+            }
             HStack(spacing: 6) {
                 if session.isRecentlyActive {
                     Circle().fill(.green).frame(width: 6, height: 6)
@@ -400,6 +418,7 @@ private struct OpencodeRow: View {
                 if let model = session.model?.id { Text(model) }
                 if let cost = session.cost, cost > 0 { Text(String(format: "$%.2f", cost)) }
                 Text("\(session.totalTokens) tok")
+                if let updated = session.updatedRelative { Text(updated) }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)

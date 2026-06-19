@@ -47,6 +47,30 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
         guard let updated = time?.updated else { return false }
         return Date().timeIntervalSince1970 * 1000 - updated < 10_000
     }
+
+    /// Dormant indicator: no server-side activity in over 30 days. Sessions with
+    /// no recorded update time are treated as not stale.
+    var isStale: Bool {
+        guard let updated = time?.updated else { return false }
+        let thirtyDaysMillis = 30.0 * 24 * 60 * 60 * 1000
+        return Date().timeIntervalSince1970 * 1000 - updated > thirtyDaysMillis
+    }
+
+    /// Compact "time since last update" for the sidebar (e.g. "2d ago"). nil when
+    /// the server reports no update time.
+    var updatedRelative: String? {
+        guard let updated = time?.updated else { return nil }
+        let seconds = Date().timeIntervalSince1970 - updated / 1000
+        switch seconds {
+        case ..<60: return "just now"
+        case ..<3_600: return "\(Int(seconds / 60))m ago"
+        case ..<86_400: return "\(Int(seconds / 3_600))h ago"
+        case ..<604_800: return "\(Int(seconds / 86_400))d ago"
+        case ..<2_592_000: return "\(Int(seconds / 604_800))w ago"
+        case ..<31_536_000: return "\(Int(seconds / 2_592_000))mo ago"
+        default: return "\(Int(seconds / 31_536_000))y ago"
+        }
+    }
 }
 
 /// A project as returned by GET /project.
