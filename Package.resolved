@@ -1,6 +1,15 @@
 {
-  "originHash" : "fc1e346d8633c6c7558622087e423653ec7c301654535ce7a7ba0675cdc6edcf",
+  "originHash" : "b63d3cb3e736e1cd70d5bd4d30d208bb4924dede65514a17bc0efd04ee74315e",
   "pins" : [
+    {
+      "identity" : "keyboardshortcuts",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sindresorhus/KeyboardShortcuts",
+      "state" : {
+        "revision" : "49c3fc04ea827f816df67843bfcc57286b47ff06",
+        "version" : "3.0.1"
+      }
+    },
     {
       "identity" : "libghostty-spm",
       "kind" : "remoteSourceControl",

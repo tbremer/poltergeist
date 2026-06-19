@@ -4,9 +4,19 @@ import SwiftUI
 import AppKit
 import GhosttyTerminal
 import GhosttyTheme
+import KeyboardShortcuts
 
 /// Which system appearance a theme applies to.
 enum ThemeSlot: Hashable { case light, dark }
+
+extension KeyboardShortcuts.Name {
+    /// Global hotkey to summon/hide Poltergeist from anywhere. Ships with a
+    /// default of ⌃⌥⌘P; the user can rebind it in Settings → Keyboard.
+    static let togglePoltergeist = Self(
+        "togglePoltergeist",
+        initial: .init(.p, modifiers: [.control, .option, .command])
+    )
+}
 
 /// Top-level app state: owns the opencode server, the terminal session store,
 /// and the live opencode session list shown in the sidebar.
@@ -160,6 +170,27 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.systemIsDark = Self.osIsDark()
                 self.applyActiveAppearance()
+            }
+        }
+
+        // System-wide hotkey to summon/hide the app (configurable in Settings).
+        KeyboardShortcuts.onKeyUp(for: .togglePoltergeist) { [weak self] in
+            MainActor.assumeIsolated { self?.toggleAppVisibility() }
+        }
+    }
+
+    // MARK: - Global hotkey
+
+    /// Quake-style toggle: hide the app if it's frontmost, otherwise bring it
+    /// (and a key window) to the front.
+    func toggleAppVisibility() {
+        if NSApp.isActive {
+            NSApp.hide(nil)
+        } else {
+            NSApp.unhide(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            if let window = NSApp.windows.first(where: { $0.canBecomeKey }) {
+                window.makeKeyAndOrderFront(nil)
             }
         }
     }

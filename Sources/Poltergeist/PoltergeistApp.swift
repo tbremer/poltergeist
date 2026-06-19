@@ -34,6 +34,10 @@ struct PoltergeistApp: App {
                     .keyboardShortcut("[", modifiers: [.command, .shift])
             }
         }
+
+        Settings {
+            SettingsView(model: model)
+        }
     }
 }
 
