@@ -405,6 +405,38 @@ final class AppModel: ObservableObject {
         scheduleLightRefresh()
     }
 
+    /// Permanently deletes every opencode session in a project group.
+    func deleteAllOpencodeSessions(in group: OpencodeProjectGroup) async {
+        await deleteOpencodeSessions(group.sessions)
+    }
+
+    /// Permanently deletes the opencode sessions with the given ids (used by the
+    /// sidebar's per-project select & delete mode).
+    func deleteOpencodeSessions(ids: Set<String>) async {
+        await deleteOpencodeSessions(ids.compactMap { opencodeByID[$0] })
+    }
+
+    /// Shared deletion: closes any attached terminals, removes the sessions
+    /// server-side, then prunes the cache + sidebar groups in one pass.
+    private func deleteOpencodeSessions(_ sessions: [OpencodeSession]) async {
+        guard let client, !sessions.isEmpty else { return }
+        for session in sessions {
+            if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
+                store.closeSession(attached.id)
+            }
+            try? await client.deleteSession(id: session.id, directory: session.directory)
+            opencodeByID[session.id] = nil
+        }
+        let deletedIDs = Set(sessions.map(\.id))
+        opencodeSessions.removeAll { deletedIDs.contains($0.id) }
+        opencodeGroups = opencodeGroups.compactMap { group in
+            var group = group
+            group.sessions.removeAll { deletedIDs.contains($0.id) }
+            return group.sessions.isEmpty ? nil : group
+        }
+        scheduleLightRefresh()
+    }
+
     /// Renames an opencode session server-side (PATCH), with an optimistic
     /// local update so the sidebar reflects it immediately.
     func renameOpencodeSession(_ session: OpencodeSession, to title: String) async {

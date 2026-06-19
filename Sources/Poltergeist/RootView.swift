@@ -15,8 +15,15 @@ struct RootView: View {
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
     @State private var pendingDelete: OpencodeSession?
+    @State private var pendingDeleteGroup: OpencodeProjectGroup?
     @State private var renamingOpencode: OpencodeSession?
     @State private var opencodeRenameText: String = ""
+
+    /// Per-project select & delete mode: the directory currently being edited
+    /// (nil = off) and the set of chosen opencode session ids.
+    @State private var selectionProject: String?
+    @State private var selectedSessionIDs: Set<String> = []
+    @State private var confirmingDeleteSelection = false
 
     var body: some View {
         NavigationSplitView {
@@ -45,6 +52,32 @@ struct RootView: View {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: { session in
             Text("“\(session.title ?? session.id)” will be permanently removed from opencode.")
+        }
+        .confirmationDialog(
+            "Delete all sessions for this project?",
+            isPresented: deleteGroupConfirmBinding,
+            presenting: pendingDeleteGroup
+        ) { group in
+            Button("Delete \(group.sessions.count) Sessions", role: .destructive) {
+                Task { await model.deleteAllOpencodeSessions(in: group) }
+                pendingDeleteGroup = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteGroup = nil }
+        } message: { group in
+            Text("All \(group.sessions.count) opencode sessions in “\(group.displayName)” will be permanently removed from opencode.")
+        }
+        .confirmationDialog(
+            "Delete selected sessions?",
+            isPresented: $confirmingDeleteSelection
+        ) {
+            Button("Delete \(selectedSessionIDs.count) Sessions", role: .destructive) {
+                let ids = selectedSessionIDs
+                Task { await model.deleteOpencodeSessions(ids: ids) }
+                exitSelectMode()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The \(selectedSessionIDs.count) selected opencode sessions will be permanently removed from opencode.")
         }
         .alert("Rename opencode session", isPresented: opencodeRenameBinding) {
             TextField("Title", text: $opencodeRenameText)
@@ -90,43 +123,7 @@ struct RootView: View {
             }
 
             ForEach(model.opencodeGroups) { group in
-                let expanded = store.expandedGroups.contains(group.directory)
-                Section {
-                    if expanded {
-                        ForEach(group.sessions) { ocSession in
-                            Button {
-                                model.openOpencodeSession(ocSession)
-                            } label: {
-                                OpencodeRow(session: ocSession)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("Open") { model.openOpencodeSession(ocSession) }
-                                Button("Rename…") { beginOpencodeRename(ocSession) }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    pendingDelete = ocSession
-                                }
-                            }
-                        }
-                    }
-                } header: {
-                    Button {
-                        store.setGroupExpanded(group.directory, !expanded)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 10)
-                            Text(group.displayName).lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text("\(group.sessions.count)").foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                projectSection(group)
             }
         }
         .navigationTitle("Poltergeist")
@@ -152,6 +149,111 @@ struct RootView: View {
         model.activeThemeDef.flatMap { Color(hexRGB: $0.background) }
     }
 
+    // MARK: - Project sections
+
+    @ViewBuilder
+    private func projectSection(_ group: OpencodeProjectGroup) -> some View {
+        let selecting = selectionProject == group.directory
+        let expanded = store.expandedGroups.contains(group.directory) || selecting
+        Section {
+            if expanded {
+                ForEach(group.sessions) { ocSession in
+                    opencodeSessionRow(ocSession, selecting: selecting)
+                }
+            }
+        } header: {
+            projectHeader(group, selecting: selecting)
+        }
+    }
+
+    @ViewBuilder
+    private func opencodeSessionRow(_ ocSession: OpencodeSession, selecting: Bool) -> some View {
+        Button {
+            if selecting {
+                toggleSelection(ocSession.id)
+            } else {
+                model.openOpencodeSession(ocSession)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if selecting {
+                    let on = selectedSessionIDs.contains(ocSession.id)
+                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(on ? Color.accentColor : Color.secondary)
+                }
+                OpencodeRow(session: ocSession)
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open") { model.openOpencodeSession(ocSession) }
+            Button("Rename…") { beginOpencodeRename(ocSession) }
+            Divider()
+            Button("Delete", role: .destructive) { pendingDelete = ocSession }
+        }
+    }
+
+    @ViewBuilder
+    private func projectHeader(_ group: OpencodeProjectGroup, selecting: Bool) -> some View {
+        if selecting {
+            HStack(spacing: 8) {
+                Text(group.displayName).lineLimit(1)
+                Spacer(minLength: 4)
+                Button("Delete (\(selectedSessionIDs.count))", role: .destructive) {
+                    confirmingDeleteSelection = true
+                }
+                .disabled(selectedSessionIDs.isEmpty)
+                Button("Done") { exitSelectMode() }
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
+        } else {
+            let expanded = store.expandedGroups.contains(group.directory)
+            Button {
+                store.setGroupExpanded(group.directory, !expanded)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(group.displayName).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("\(group.sessions.count)").foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button("Select Sessions") { enterSelectMode(group) }
+                    .disabled(group.sessions.isEmpty)
+                Button("Delete All Sessions…", role: .destructive) {
+                    pendingDeleteGroup = group
+                }
+                .disabled(group.sessions.isEmpty)
+            }
+        }
+    }
+
+    private func enterSelectMode(_ group: OpencodeProjectGroup) {
+        selectionProject = group.directory
+        selectedSessionIDs = []
+        store.setGroupExpanded(group.directory, true)
+    }
+
+    private func exitSelectMode() {
+        selectionProject = nil
+        selectedSessionIDs = []
+    }
+
+    private func toggleSelection(_ id: String) {
+        if selectedSessionIDs.contains(id) {
+            selectedSessionIDs.remove(id)
+        } else {
+            selectedSessionIDs.insert(id)
+        }
+    }
+
     // MARK: - Rename
 
     private var renamingBinding: Binding<Bool> {
@@ -160,6 +262,10 @@ struct RootView: View {
 
     private var deleteConfirmBinding: Binding<Bool> {
         Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
+    private var deleteGroupConfirmBinding: Binding<Bool> {
+        Binding(get: { pendingDeleteGroup != nil }, set: { if !$0 { pendingDeleteGroup = nil } })
     }
 
     private var opencodeRenameBinding: Binding<Bool> {
