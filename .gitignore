@@ -17,3 +17,6 @@ xcuserdata/
 # Poltergeist runtime data (sessions + scrollback, added in later milestones)
 /Application Support/
 *.log
+
+# Packaged app bundle + generated icon artifacts (see scripts/package-app.fish)
+/dist/
