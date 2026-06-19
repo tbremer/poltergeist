@@ -5,14 +5,20 @@ struct OpencodeClient: Sendable {
     let baseURL: URL
 
     /// Lists sessions, optionally scoped to a project directory.
-    func listSessions(directory: String?) async throws -> [OpencodeSession] {
+    ///
+    /// The server caps results at 100 by default and ignores offset/cursor
+    /// params, so we request a high explicit `limit` to avoid silently
+    /// truncating busy projects.
+    func listSessions(directory: String?, limit: Int = 1000) async throws -> [OpencodeSession] {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("session"),
             resolvingAgainstBaseURL: false
         )
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
         if let directory {
-            components?.queryItems = [URLQueryItem(name: "directory", value: directory)]
+            items.append(URLQueryItem(name: "directory", value: directory))
         }
+        components?.queryItems = items
         guard let url = components?.url else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
