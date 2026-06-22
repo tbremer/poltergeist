@@ -71,6 +71,14 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
         default: return "\(Int(seconds / 31_536_000))y ago"
         }
     }
+
+    /// Absolute last-updated timestamp for the relative-date tooltip
+    /// (e.g. "Last updated Jun 17, 2026 at 3:42 PM").
+    var updatedTooltip: String? {
+        guard let updated = time?.updated else { return nil }
+        let date = Date(timeIntervalSince1970: updated / 1000)
+        return "Last updated \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
 }
 
 /// A project as returned by GET /project.
@@ -79,16 +87,21 @@ struct OpencodeProject: Codable, Identifiable, Hashable {
     var worktree: String?
 }
 
-/// Sessions grouped by working directory for the sidebar.
-struct OpencodeProjectGroup: Identifiable, Hashable {
-    let directory: String
+/// A node in the sidebar's project file-tree. A node may be a pure folder, a
+/// project directory holding sessions, or both (a project with sub-projects).
+struct ProjectTreeNode: Identifiable, Hashable {
+    /// Absolute filesystem path of this node (stable identity + expansion key).
+    let path: String
+    /// Display label for this path component (e.g. "Projects", "~", "Unknown").
+    let name: String
+    var children: [ProjectTreeNode]
+    /// Top-level opencode sessions whose directory is exactly this node's path.
     var sessions: [OpencodeSession]
 
-    var id: String { directory }
+    var id: String { path }
 
-    var displayName: String {
-        directory == "—" ? "Unknown" : (directory as NSString).abbreviatingWithTildeInPath
+    /// Total sessions in this node and all descendants (for the folder badge).
+    var totalSessions: Int {
+        sessions.count + children.reduce(0) { $0 + $1.totalSessions }
     }
-
-    var mostRecent: Double { sessions.map(\.updatedAt).max() ?? 0 }
 }

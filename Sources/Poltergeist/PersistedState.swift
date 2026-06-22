@@ -15,8 +15,10 @@ struct PersistedState: Codable {
     var sessions: [PersistedSession]
     var selectedID: UUID?
     var nextOrdinal: Int
-    /// Directories of OpenCode project groups the user has expanded in the sidebar.
-    var expandedGroups: [String]?
+    /// Legacy (pre-tree sidebar): directories the user had expanded. Ignored now.
+    var expandedGroups: [String]? = nil
+    /// Paths of project-tree folders the user has collapsed (expanded by default).
+    var collapsedGroups: [String]? = nil
 }
 
 enum Persistence {

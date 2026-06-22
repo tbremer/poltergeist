@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import GhosttyTerminal
 import GhosttyTheme
 
@@ -15,7 +16,7 @@ struct RootView: View {
     @State private var renamingID: TerminalSession.ID?
     @State private var renameText: String = ""
     @State private var pendingDelete: OpencodeSession?
-    @State private var pendingDeleteGroup: OpencodeProjectGroup?
+    @State private var pendingDeleteProject: ProjectTreeNode?
     @State private var renamingOpencode: OpencodeSession?
     @State private var opencodeRenameText: String = ""
 
@@ -35,6 +36,7 @@ struct RootView: View {
                 .navigationSubtitle(subtitle)
         }
         .preferredColorScheme(model.appearanceScheme)
+        .background(WindowChromeConfigurator(backgroundColor: themeBackground))
         .alert("Rename Session", isPresented: renamingBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingID = nil }
@@ -55,16 +57,17 @@ struct RootView: View {
         }
         .confirmationDialog(
             "Delete all sessions for this project?",
-            isPresented: deleteGroupConfirmBinding,
-            presenting: pendingDeleteGroup
-        ) { group in
-            Button("Delete \(group.sessions.count) Sessions", role: .destructive) {
-                Task { await model.deleteAllOpencodeSessions(in: group) }
-                pendingDeleteGroup = nil
+            isPresented: deleteProjectConfirmBinding,
+            presenting: pendingDeleteProject
+        ) { project in
+            Button("Delete \(project.sessions.count) Sessions", role: .destructive) {
+                let ids = Set(project.sessions.map(\.id))
+                Task { await model.deleteOpencodeSessions(ids: ids) }
+                pendingDeleteProject = nil
             }
-            Button("Cancel", role: .cancel) { pendingDeleteGroup = nil }
-        } message: { group in
-            Text("All \(group.sessions.count) opencode sessions in “\(group.displayName)” will be permanently removed from opencode.")
+            Button("Cancel", role: .cancel) { pendingDeleteProject = nil }
+        } message: { project in
+            Text("All \(project.sessions.count) opencode sessions in “\(folderLabel(project))” will be permanently removed from opencode.")
         }
         .confirmationDialog(
             "Delete selected sessions?",
@@ -115,15 +118,15 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .disabled(!model.server.isReady)
 
-                if model.opencodeGroups.isEmpty {
+                if model.projectTree.isEmpty {
                     Text(model.server.statusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
 
-            ForEach(model.opencodeGroups) { group in
-                projectSection(group)
+                ForEach(sidebarItems) { item in
+                    sidebarRow(item)
+                }
             }
         }
         .navigationTitle("Poltergeist")
@@ -149,55 +152,59 @@ struct RootView: View {
         model.activeThemeDef.flatMap { Color(hexRGB: $0.background) }
     }
 
-    // MARK: - Project sections
+    // MARK: - Project tree
 
-    @ViewBuilder
-    private func projectSection(_ group: OpencodeProjectGroup) -> some View {
-        let selecting = selectionProject == group.directory
-        let expanded = store.expandedGroups.contains(group.directory) || selecting
-        Section {
+    /// One row in the flattened project tree.
+    private enum SidebarItem: Identifiable {
+        case folder(ProjectTreeNode, depth: Int, expanded: Bool, selecting: Bool)
+        case session(OpencodeSession, depth: Int, projectPath: String)
+
+        var id: String {
+            switch self {
+            case let .folder(node, _, _, _): return "folder:" + node.path
+            case let .session(session, _, _): return "session:" + session.id
+            }
+        }
+    }
+
+    /// Flattens the tree into visible rows, honoring per-folder expansion (a
+    /// folder in select mode is force-expanded).
+    private var sidebarItems: [SidebarItem] {
+        var rows: [SidebarItem] = []
+        appendItems(model.projectTree, depth: 0, into: &rows)
+        return rows
+    }
+
+    private func appendItems(_ nodes: [ProjectTreeNode], depth: Int, into rows: inout [SidebarItem]) {
+        for node in nodes {
+            let selecting = selectionProject == node.path
+            let expanded = store.isExpanded(node.path) || selecting
+            rows.append(.folder(node, depth: depth, expanded: expanded, selecting: selecting))
             if expanded {
-                ForEach(group.sessions) { ocSession in
-                    opencodeSessionRow(ocSession, selecting: selecting)
+                appendItems(node.children, depth: depth + 1, into: &rows)
+                for session in node.sessions {
+                    rows.append(.session(session, depth: depth + 1, projectPath: node.path))
                 }
             }
-        } header: {
-            projectHeader(group, selecting: selecting)
         }
     }
 
     @ViewBuilder
-    private func opencodeSessionRow(_ ocSession: OpencodeSession, selecting: Bool) -> some View {
-        Button {
-            if selecting {
-                toggleSelection(ocSession.id)
-            } else {
-                model.openOpencodeSession(ocSession)
-            }
-        } label: {
-            HStack(spacing: 8) {
-                if selecting {
-                    let on = selectedSessionIDs.contains(ocSession.id)
-                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(on ? Color.accentColor : Color.secondary)
-                }
-                OpencodeRow(session: ocSession)
-            }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button("Open") { model.openOpencodeSession(ocSession) }
-            Button("Rename…") { beginOpencodeRename(ocSession) }
-            Divider()
-            Button("Delete", role: .destructive) { pendingDelete = ocSession }
+    private func sidebarRow(_ item: SidebarItem) -> some View {
+        switch item {
+        case let .folder(node, depth, expanded, selecting):
+            folderRow(node, depth: depth, expanded: expanded, selecting: selecting)
+        case let .session(session, depth, projectPath):
+            sessionRow(session, depth: depth, projectPath: projectPath)
         }
     }
 
     @ViewBuilder
-    private func projectHeader(_ group: OpencodeProjectGroup, selecting: Bool) -> some View {
+    private func folderRow(_ node: ProjectTreeNode, depth: Int, expanded: Bool, selecting: Bool) -> some View {
+        let leading = CGFloat(depth) * 12
         if selecting {
             HStack(spacing: 8) {
-                Text(group.displayName).lineLimit(1)
+                Text(folderLabel(node)).lineLimit(1)
                 Spacer(minLength: 4)
                 Button("Delete (\(selectedSessionIDs.count))", role: .destructive) {
                     confirmingDeleteSelection = true
@@ -207,38 +214,71 @@ struct RootView: View {
             }
             .buttonStyle(.borderless)
             .font(.callout)
+            .padding(.leading, leading)
+        } else if node.sessions.isEmpty {
+            folderButton(node, expanded: expanded).padding(.leading, leading)
         } else {
-            let expanded = store.expandedGroups.contains(group.directory)
-            Button {
-                store.setGroupExpanded(group.directory, !expanded)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 10)
-                    Text(group.displayName).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text("\(group.sessions.count)").foregroundStyle(.secondary)
+            folderButton(node, expanded: expanded)
+                .contextMenu {
+                    Button("Select Sessions") { enterSelectMode(node) }
+                    Button("Delete All Sessions…", role: .destructive) { pendingDeleteProject = node }
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button("Select Sessions") { enterSelectMode(group) }
-                    .disabled(group.sessions.isEmpty)
-                Button("Delete All Sessions…", role: .destructive) {
-                    pendingDeleteGroup = group
-                }
-                .disabled(group.sessions.isEmpty)
-            }
+                .padding(.leading, leading)
         }
     }
 
-    private func enterSelectMode(_ group: OpencodeProjectGroup) {
-        selectionProject = group.directory
+    private func folderButton(_ node: ProjectTreeNode, expanded: Bool) -> some View {
+        Button {
+            store.setExpanded(node.path, !store.isExpanded(node.path))
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                Text(folderLabel(node)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(node.totalSessions)").foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sessionRow(_ session: OpencodeSession, depth: Int, projectPath: String) -> some View {
+        let selecting = selectionProject == projectPath
+        let selected = selectedSessionIDs.contains(session.id)
+        return Button {
+            if selecting { toggleSelection(session.id) } else { model.openOpencodeSession(session) }
+        } label: {
+            HStack(spacing: 8) {
+                if selecting {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                }
+                OpencodeRow(session: session)
+            }
+            .padding(.leading, CGFloat(depth) * 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open") { model.openOpencodeSession(session) }
+            Button("Rename…") { beginOpencodeRename(session) }
+            Divider()
+            Button("Delete", role: .destructive) { pendingDelete = session }
+        }
+    }
+
+    /// Folder display label: append "/" except for the root and Unknown nodes.
+    private func folderLabel(_ node: ProjectTreeNode) -> String {
+        (node.name == "Unknown" || node.name == "/") ? node.name : node.name + "/"
+    }
+
+    private func enterSelectMode(_ node: ProjectTreeNode) {
+        selectionProject = node.path
         selectedSessionIDs = []
-        store.setGroupExpanded(group.directory, true)
+        store.setExpanded(node.path, true)
     }
 
     private func exitSelectMode() {
@@ -264,8 +304,8 @@ struct RootView: View {
         Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
     }
 
-    private var deleteGroupConfirmBinding: Binding<Bool> {
-        Binding(get: { pendingDeleteGroup != nil }, set: { if !$0 { pendingDeleteGroup = nil } })
+    private var deleteProjectConfirmBinding: Binding<Bool> {
+        Binding(get: { pendingDeleteProject != nil }, set: { if !$0 { pendingDeleteProject = nil } })
     }
 
     private var opencodeRenameBinding: Binding<Bool> {
@@ -337,6 +377,30 @@ private struct TerminalDetailView: View {
     }
 }
 
+/// Tints the native window titlebar to the active theme background so the top
+/// bar blends with the sidebar/terminal. Restores default chrome when no theme.
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    let backgroundColor: Color?
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let color = backgroundColor
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            if let color {
+                window.titlebarAppearsTransparent = true
+                window.titlebarSeparatorStyle = .none
+                window.backgroundColor = NSColor(color)
+            } else {
+                window.titlebarAppearsTransparent = false
+                window.titlebarSeparatorStyle = .automatic
+                window.backgroundColor = .windowBackgroundColor
+            }
+        }
+    }
+}
+
 /// Tints the sidebar to the theme background (and hides the default material)
 /// when a theme is active; otherwise leaves the default chrome untouched.
 private struct ThemedSidebarBackground: ViewModifier {
@@ -382,7 +446,9 @@ private struct SessionRow: View {
                         }
                         if let model = opencode.model?.id { Text(model) }
                         if let cost = opencode.cost, cost > 0 { Text(String(format: "$%.2f", cost)) }
-                        if let updated = opencode.updatedRelative { Text(updated) }
+                        if let updated = opencode.updatedRelative {
+                            Text(updated).help(opencode.updatedTooltip ?? "")
+                        }
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -418,7 +484,9 @@ private struct OpencodeRow: View {
                 if let model = session.model?.id { Text(model) }
                 if let cost = session.cost, cost > 0 { Text(String(format: "$%.2f", cost)) }
                 Text("\(session.totalTokens) tok")
-                if let updated = session.updatedRelative { Text(updated) }
+                if let updated = session.updatedRelative {
+                    Text(updated).help(session.updatedTooltip ?? "")
+                }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)

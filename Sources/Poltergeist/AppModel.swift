@@ -41,8 +41,8 @@ final class AppModel: ObservableObject {
     /// Flat list of all known opencode sessions (most recent first).
     @Published private(set) var opencodeSessions: [OpencodeSession] = []
 
-    /// All opencode sessions grouped by working directory (active dir first).
-    @Published private(set) var opencodeGroups: [OpencodeProjectGroup] = []
+    /// Project file-tree for the sidebar (folders nest; sessions are leaves).
+    @Published private(set) var projectTree: [ProjectTreeNode] = []
 
     /// Lookup of opencode sessions by id so terminal rows can show metadata.
     @Published private(set) var opencodeByID: [String: OpencodeSession] = [:]
@@ -308,7 +308,7 @@ final class AppModel: ObservableObject {
         }
         let fetched = await fetchSessions(directories: directories)
         for (id, session) in fetched { opencodeByID[id] = session }
-        rebuildGroups()
+        rebuildTree()
     }
 
     /// Full: enumerate all projects and replace the cache (also prunes deletions).
@@ -323,7 +323,7 @@ final class AppModel: ObservableObject {
 
         let fetched = await fetchSessions(directories: directories)
         opencodeByID = fetched
-        rebuildGroups()
+        rebuildTree()
     }
 
     private func fetchSessions(directories: Set<String>) async -> [String: OpencodeSession] {
@@ -342,18 +342,86 @@ final class AppModel: ObservableObject {
         return byID
     }
 
-    private func rebuildGroups() {
+    private func rebuildTree() {
         let tops = Array(opencodeByID.values)
-        let activeDir = store.selectedSession?.currentDirectory
-        var groups = Dictionary(grouping: tops, by: { $0.directory ?? "—" })
-            .map { OpencodeProjectGroup(directory: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
-        groups.sort { a, b in
-            if a.directory == activeDir { return true }
-            if b.directory == activeDir { return false }
-            return a.mostRecent > b.mostRecent
-        }
-        opencodeGroups = groups
         opencodeSessions = tops.sorted { $0.updatedAt > $1.updatedAt }
+        projectTree = Self.buildTree(from: tops, homeDirectory: homeDirectory)
+    }
+
+    /// Builds the sidebar file-tree from session directories. The home prefix is
+    /// flattened away (top level shows the folders directly under ~), folders are
+    /// ordered like a file tree, and each node's own sessions are recency-sorted.
+    private static func buildTree(from sessions: [OpencodeSession], homeDirectory: String) -> [ProjectTreeNode] {
+        final class Builder {
+            let path: String
+            let name: String
+            var children: [String: Builder] = [:]
+            var sessions: [OpencodeSession] = []
+            init(path: String, name: String) { self.path = path; self.name = name }
+        }
+
+        let root = Builder(path: "", name: "")
+        func child(of parent: Builder, name: String, path: String) -> Builder {
+            if let existing = parent.children[name] { return existing }
+            let node = Builder(path: path, name: name)
+            parent.children[name] = node
+            return node
+        }
+
+        for (directory, group) in Dictionary(grouping: sessions, by: { $0.directory ?? "—" }) {
+            // The chain of (displayName, absolutePath) from a top-level node down
+            // to this directory's node.
+            var chain: [(name: String, path: String)] = []
+            if directory == "—" {
+                chain = [("Unknown", "—")]
+            } else if directory == homeDirectory {
+                chain = [("~", homeDirectory)]
+            } else if directory.hasPrefix(homeDirectory + "/") {
+                // Nest home-relative projects under a single "~" root node.
+                chain = [("~", homeDirectory)]
+                var accumulated = homeDirectory
+                for component in directory.dropFirst(homeDirectory.count + 1).split(separator: "/").map(String.init) {
+                    accumulated += "/" + component
+                    chain.append((component, accumulated))
+                }
+            } else {
+                let components = directory.split(separator: "/").map(String.init)
+                var accumulated = ""
+                for (index, component) in components.enumerated() {
+                    accumulated += "/" + component
+                    // Prefix the top-level non-home component with "/" so it reads
+                    // as an absolute path, not a home-relative folder.
+                    chain.append((index == 0 ? "/" + component : component, accumulated))
+                }
+                if components.isEmpty { chain = [("/", "/")] }  // directory == "/"
+            }
+
+            var node = root
+            for step in chain {
+                node = child(of: node, name: step.name, path: step.path)
+            }
+            node.sessions = group
+        }
+
+        func convert(_ builder: Builder) -> ProjectTreeNode {
+            ProjectTreeNode(
+                path: builder.path,
+                name: builder.name,
+                children: builder.children.values
+                    .map(convert)
+                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
+                sessions: builder.sessions.sorted { $0.updatedAt > $1.updatedAt }
+            )
+        }
+
+        return root.children.values
+            .map(convert)
+            .sorted { a, b in
+                // Unknown-directory node sinks to the bottom; others by path order.
+                if a.name == "Unknown" { return false }
+                if b.name == "Unknown" { return true }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
     }
 
     // MARK: - Actions
@@ -383,6 +451,7 @@ final class AppModel: ObservableObject {
         let directory = store.selectedSession?.currentDirectory ?? homeDirectory
         guard let created = try? await client.createSession(directory: directory) else { return }
         opencodeByID[created.id] = created
+        rebuildTree()
         openOpencodeSession(created)
         scheduleLightRefresh()
     }
@@ -390,35 +459,18 @@ final class AppModel: ObservableObject {
     /// Permanently deletes an opencode session from the server, closing any
     /// terminal attached to it.
     func deleteOpencodeSession(_ session: OpencodeSession) async {
-        guard let client else { return }
-        if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
-            store.closeSession(attached.id)
-        }
-        try? await client.deleteSession(id: session.id, directory: session.directory)
-        opencodeByID[session.id] = nil
-        opencodeSessions.removeAll { $0.id == session.id }
-        opencodeGroups = opencodeGroups.compactMap { group in
-            var group = group
-            group.sessions.removeAll { $0.id == session.id }
-            return group.sessions.isEmpty ? nil : group
-        }
-        scheduleLightRefresh()
-    }
-
-    /// Permanently deletes every opencode session in a project group.
-    func deleteAllOpencodeSessions(in group: OpencodeProjectGroup) async {
-        await deleteOpencodeSessions(group.sessions)
+        await removeOpencodeSessions([session])
     }
 
     /// Permanently deletes the opencode sessions with the given ids (used by the
-    /// sidebar's per-project select & delete mode).
+    /// sidebar's per-project "delete all" and select & delete mode).
     func deleteOpencodeSessions(ids: Set<String>) async {
-        await deleteOpencodeSessions(ids.compactMap { opencodeByID[$0] })
+        await removeOpencodeSessions(ids.compactMap { opencodeByID[$0] })
     }
 
     /// Shared deletion: closes any attached terminals, removes the sessions
-    /// server-side, then prunes the cache + sidebar groups in one pass.
-    private func deleteOpencodeSessions(_ sessions: [OpencodeSession]) async {
+    /// server-side, then rebuilds the tree from the updated cache.
+    private func removeOpencodeSessions(_ sessions: [OpencodeSession]) async {
         guard let client, !sessions.isEmpty else { return }
         for session in sessions {
             if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
@@ -427,13 +479,7 @@ final class AppModel: ObservableObject {
             try? await client.deleteSession(id: session.id, directory: session.directory)
             opencodeByID[session.id] = nil
         }
-        let deletedIDs = Set(sessions.map(\.id))
-        opencodeSessions.removeAll { deletedIDs.contains($0.id) }
-        opencodeGroups = opencodeGroups.compactMap { group in
-            var group = group
-            group.sessions.removeAll { deletedIDs.contains($0.id) }
-            return group.sessions.isEmpty ? nil : group
-        }
+        rebuildTree()
         scheduleLightRefresh()
     }
 
@@ -447,22 +493,10 @@ final class AppModel: ObservableObject {
             existing.title = title
             opencodeByID[session.id] = existing
         }
-        opencodeSessions = opencodeSessions.map { retitled($0, ifID: session.id, to: title) }
-        opencodeGroups = opencodeGroups.map { group in
-            var group = group
-            group.sessions = group.sessions.map { retitled($0, ifID: session.id, to: title) }
-            return group
-        }
         if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
             store.rename(attached.id, to: title)
         }
+        rebuildTree()
         scheduleLightRefresh()
-    }
-
-    private func retitled(_ session: OpencodeSession, ifID id: String, to title: String) -> OpencodeSession {
-        guard session.id == id else { return session }
-        var copy = session
-        copy.title = title
-        return copy
     }
 }

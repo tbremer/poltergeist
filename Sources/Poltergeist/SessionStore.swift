@@ -13,8 +13,9 @@ import GhosttyTerminal
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [TerminalSession] = []
     @Published var selectedID: TerminalSession.ID?
-    /// Directories of expanded OpenCode project groups (persisted UI state).
-    @Published var expandedGroups: Set<String> = []
+    /// Paths of project-tree folders the user has collapsed. Folders are expanded
+    /// by default, so this stores only the exceptions (persisted UI state).
+    @Published var collapsedGroups: Set<String> = []
 
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
@@ -121,8 +122,11 @@ final class SessionStore: ObservableObject {
         selectedID = sessions[(idx - 1 + sessions.count) % sessions.count].id
     }
 
-    func setGroupExpanded(_ directory: String, _ expanded: Bool) {
-        if expanded { expandedGroups.insert(directory) } else { expandedGroups.remove(directory) }
+    /// Project-tree folders are expanded unless explicitly collapsed.
+    func isExpanded(_ path: String) -> Bool { !collapsedGroups.contains(path) }
+
+    func setExpanded(_ path: String, _ expanded: Bool) {
+        if expanded { collapsedGroups.remove(path) } else { collapsedGroups.insert(path) }
         scheduleSave()
     }
 
@@ -141,7 +145,7 @@ final class SessionStore: ObservableObject {
         }
 
         nextOrdinal = max(state.nextOrdinal, 1)
-        expandedGroups = Set(state.expandedGroups ?? [])
+        collapsedGroups = Set(state.collapsedGroups ?? [])
         for ps in state.sessions {
             let session = TerminalSession(
                 id: ps.id,
@@ -180,7 +184,7 @@ final class SessionStore: ObservableObject {
             },
             selectedID: selectedID,
             nextOrdinal: nextOrdinal,
-            expandedGroups: Array(expandedGroups)
+            collapsedGroups: Array(collapsedGroups)
         )
     }
 
