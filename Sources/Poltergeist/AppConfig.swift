@@ -26,7 +26,7 @@ struct AppConfig: Codable, Equatable {
         if let fontFamily, !fontFamily.isEmpty {
             configuration = configuration.fontFamily(fontFamily)
         }
-        return configuration.fontSize(effectiveFontSize)
+        return configuration.fontSize(effectiveFontSize).windowPaddingY(0)
     }
 
     static func load() -> AppConfig {

@@ -99,7 +99,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         if let fontFamily, !fontFamily.isEmpty {
             terminalConfiguration = terminalConfiguration.fontFamily(fontFamily)
         }
-        terminalConfiguration = terminalConfiguration.fontSize(fontSize)
+        terminalConfiguration = terminalConfiguration.fontSize(fontSize).windowPaddingY(0)
 
         let state = TerminalViewState(theme: theme, terminalConfiguration: terminalConfiguration)
         state.configuration = TerminalSurfaceOptions(
