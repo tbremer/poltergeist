@@ -70,8 +70,42 @@ private struct ThemeSettings: View {
                 }
             }
             .listStyle(.plain)
+
+            Divider()
+            InactiveDimmingControls(model: model)
+                .padding(12)
         }
         .onAppear { slot = model.systemIsDark ? .dark : .light }
+    }
+}
+
+/// Controls for how unfocused panes are dimmed when a tab is split.
+private struct InactiveDimmingControls: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Dim inactive panes", isOn: Binding(
+                get: { model.dimInactivePanes },
+                set: { model.setDimInactivePanes($0) }
+            ))
+
+            HStack(spacing: 10) {
+                Text("Dimming amount")
+                Slider(
+                    value: Binding(
+                        get: { model.inactivePaneDim },
+                        set: { model.setInactivePaneDim($0) }
+                    ),
+                    in: 0 ... 1
+                )
+                Text("\(Int((model.inactivePaneDim * 100).rounded()))%")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40, alignment: .trailing)
+            }
+            .disabled(!model.dimInactivePanes)
+        }
     }
 }
 

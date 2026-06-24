@@ -18,7 +18,15 @@ struct AppConfig: Codable, Equatable {
     var lightTheme: String?   // theme for light system appearance
     var darkTheme: String?    // theme for dark system appearance
 
+    // Inactive-pane dimming (applies to unfocused panes when a tab is split).
+    var dimInactivePanes: Bool?   // master on/off (default on)
+    var inactivePaneDim: Double?  // user-facing amount 0…1 (default 0.5)
+
     var effectiveFontSize: Float { fontSize ?? 14 }
+
+    var effectiveDimInactivePanes: Bool { dimInactivePanes ?? true }
+    /// User-facing dim amount, 0…1 (shown as 0–100%).
+    var effectiveInactivePaneDim: Double { min(max(inactivePaneDim ?? 0.5, 0), 1) }
 
     /// The font portion of the config as a `TerminalConfiguration`.
     func fontConfiguration() -> TerminalConfiguration {

@@ -17,6 +17,11 @@ final class SessionStore: ObservableObject {
     /// by default, so this stores only the exceptions (persisted UI state).
     @Published var collapsedGroups: Set<String> = []
 
+    /// Per-tab pane layout. Absent means the tab is a single pane (its own
+    /// session). Splits add extra `TerminalSession`s that live only in the tree
+    /// (not in `sessions`, so they don't appear in the sidebar).
+    @Published private(set) var paneTrees: [TerminalSession.ID: PaneNode] = [:]
+
     private var nextOrdinal = 1
     private let environmentOverrides: [String: String]
     private var config: AppConfig
@@ -60,8 +65,9 @@ final class SessionStore: ObservableObject {
         return sessions.first { $0.id == selectedID }
     }
 
-    @discardableResult
-    func newSession(
+    /// Builds a terminal (PTY + surface) without inserting it anywhere. Used for
+    /// both new sidebar tabs and split panes.
+    private func makeSession(
         command: [String]? = nil,
         workingDirectory: URL? = nil,
         customTitle: String? = nil,
@@ -79,6 +85,22 @@ final class SessionStore: ObservableObject {
             theme: terminalTheme ?? .default
         )
         nextOrdinal += 1
+        return session
+    }
+
+    @discardableResult
+    func newSession(
+        command: [String]? = nil,
+        workingDirectory: URL? = nil,
+        customTitle: String? = nil,
+        opencodeSessionID: String? = nil
+    ) -> TerminalSession {
+        let session = makeSession(
+            command: command,
+            workingDirectory: workingDirectory,
+            customTitle: customTitle,
+            opencodeSessionID: opencodeSessionID
+        )
         sessions.append(session)
         selectedID = session.id
         scheduleSave()
@@ -88,7 +110,11 @@ final class SessionStore: ObservableObject {
     func closeSession(_ id: TerminalSession.ID) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         let session = sessions.remove(at: index)
-        session.terminate()
+
+        // Terminate the tab's session plus any split panes it owns.
+        let toTerminate = paneTrees[id]?.leaves ?? [session]
+        paneTrees[id] = nil
+        toTerminate.forEach { $0.terminate() }
 
         // If we closed the selected one, select the neighbour (next, else last).
         if selectedID == id {
@@ -120,6 +146,159 @@ final class SessionStore: ObservableObject {
             return
         }
         selectedID = sessions[(idx - 1 + sessions.count) % sessions.count].id
+    }
+
+    // MARK: - Panes (splits)
+
+    /// The pane layout for a tab (single leaf of the tab's own session by default).
+    func tree(for tab: TerminalSession) -> PaneNode {
+        paneTrees[tab.id] ?? .leaf(tab)
+    }
+
+    /// Every live terminal across all tabs (tabs + their split panes), de-duped.
+    var allTerminals: [TerminalSession] {
+        var seen = Set<TerminalSession.ID>()
+        var result: [TerminalSession] = []
+        for tab in sessions {
+            for leaf in tree(for: tab).leaves where seen.insert(leaf.id).inserted {
+                result.append(leaf)
+            }
+        }
+        return result
+    }
+
+    /// Whether the selected tab is currently split into multiple panes.
+    var selectedTabHasSplits: Bool {
+        guard let tab = selectedSession else { return false }
+        return !tree(for: tab).isSingleLeaf
+    }
+
+    /// The leaf the user is working in: the pane whose Ghostty surface currently
+    /// holds keyboard focus, else the tab's own session. Read on demand (rather
+    /// than tracked reactively) so focus changes don't churn the view tree and
+    /// knock the terminal out of first-responder.
+    private func focusedLeaf(in tab: TerminalSession) -> TerminalSession {
+        tree(for: tab).leaves.first { $0.state.isFocused } ?? tab
+    }
+
+    /// Splits the focused pane of the selected tab, opening a new shell beside it
+    /// (in the focused pane's working directory) and moving keyboard focus to it.
+    func splitFocusedPane(_ axis: SplitAxis) {
+        guard let tabID = selectedID, let tab = sessions.first(where: { $0.id == tabID }) else { return }
+        let current = tree(for: tab)
+        let target = focusedLeaf(in: tab)
+        let newPane = makeSession(workingDirectory: URL(fileURLWithPath: target.currentDirectory))
+        // New split takes half of the target pane's own region; existing splits
+        // keep their fractions, so no other pane moves or resizes.
+        let split = PaneNode.split(id: UUID(), axis: axis, fraction: 0.5, first: .leaf(target), second: .leaf(newPane))
+        paneTrees[tabID] = current.replacingLeaf(target.id, with: split)
+        focusSurface(of: newPane)
+    }
+
+    /// Sets the divider position of a single split (used by both divider drags
+    /// and double-click-to-center, which passes 0.5). Only the matching split
+    /// changes; all other dividers keep their positions. Keyboard focus returns
+    /// to the active pane once the layout settles.
+    func setSplitFraction(_ fraction: Double, splitID: UUID) {
+        guard let tabID = selectedID, let tab = sessions.first(where: { $0.id == tabID }),
+              let tree = paneTrees[tabID] else { return }
+        let focused = focusedLeaf(in: tab)
+        paneTrees[tabID] = tree.settingFraction(fraction, forSplit: splitID)
+        focusSurface(of: focused)
+    }
+
+    /// Adding a pane rebuilds the surrounding view tree, which drops the
+    /// terminal's first-responder status. Once the new surface is mounted we make
+    /// it first responder so keyboard focus follows the split. This is a one-shot
+    /// (not a `.terminalFocused` binding) to avoid the continuous focus-sync that
+    /// otherwise swallows keystrokes in this layout.
+    private func focusSurface(of session: TerminalSession, attempt: Int = 0) {
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow,
+           let content = window.contentView,
+           let view = Self.terminalView(for: session.state, in: content) {
+            window.makeFirstResponder(view)
+            return
+        }
+        guard attempt < 10 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.focusSurface(of: session, attempt: attempt + 1)
+        }
+    }
+
+    /// Finds the Ghostty surface view bound to `state` (its delegate) within a
+    /// view subtree.
+    private static func terminalView(for state: TerminalViewState, in view: NSView) -> AppTerminalView? {
+        if let term = view as? AppTerminalView, let delegate = term.delegate as? TerminalViewState, delegate === state {
+            return term
+        }
+        for sub in view.subviews {
+            if let found = terminalView(for: state, in: sub) { return found }
+        }
+        return nil
+    }
+
+    /// Closes the focused pane. With no splits this closes the whole tab; within a
+    /// split it removes that pane and collapses the split into its sibling, then
+    /// moves keyboard focus to a neighbouring pane.
+    func closeFocusedPane() {
+        guard let tabID = selectedID, let tab = sessions.first(where: { $0.id == tabID }) else { return }
+        let current = tree(for: tab)
+
+        guard !current.isSingleLeaf else {
+            closeSession(tabID)
+            return
+        }
+
+        let target = focusedLeaf(in: tab)
+        // Guard against a stale/foreign focus target nuking the whole tab: only
+        // act on a pane that's actually in this tree.
+        guard let targetIndex = current.leaves.firstIndex(where: { $0.id == target.id }),
+              case let result = current.removingLeaf(target.id),
+              let removed = result.removed, let newTree = result.node
+        else {
+            return
+        }
+        removed.terminate()
+
+        if removed.id == tabID {
+            // The tab's own session was closed; promote a remaining pane so the
+            // sidebar entry stays alive (its id becomes the tab's new id).
+            guard let promoted = newTree.firstLeaf,
+                  let index = sessions.firstIndex(where: { $0.id == tabID }) else { return }
+            sessions[index] = promoted
+            paneTrees[tabID] = nil
+            paneTrees[promoted.id] = newTree.isSingleLeaf ? nil : newTree
+            if selectedID == tabID { selectedID = promoted.id }
+        } else {
+            paneTrees[tabID] = newTree.isSingleLeaf ? nil : newTree
+        }
+        scheduleSave()
+
+        // Re-focus a surviving pane (the one now occupying the closed pane's
+        // slot, else the last) so the terminal keeps first-responder — otherwise
+        // the next ⌘W escapes the key monitor and closes the whole window.
+        let remaining = newTree.leaves
+        if !remaining.isEmpty {
+            focusSurface(of: remaining[min(targetIndex, remaining.count - 1)])
+        }
+    }
+
+    /// Moves keyboard focus to the next pane (left→right, top→bottom) within the
+    /// selected tab, wrapping around. ⌘].
+    func focusNextPane() { cycleFocus(by: 1) }
+
+    /// Moves keyboard focus to the previous pane (right→left, bottom→top),
+    /// wrapping around. ⌘[.
+    func focusPreviousPane() { cycleFocus(by: -1) }
+
+    private func cycleFocus(by offset: Int) {
+        guard let tab = selectedSession else { return }
+        let leaves = tree(for: tab).leaves
+        guard leaves.count > 1 else { return }
+        let current = leaves.firstIndex { $0.state.isFocused } ?? 0
+        let target = leaves[(current + offset + leaves.count) % leaves.count]
+        focusSurface(of: target)
     }
 
     /// Project-tree folders are expanded unless explicitly collapsed.

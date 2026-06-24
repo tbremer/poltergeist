@@ -31,6 +31,14 @@ final class AppModel: ObservableObject {
     /// True when macOS is in Dark mode (selects which slot is active).
     @Published private(set) var systemIsDark = false
 
+    /// Inactive-pane dimming options (applied to unfocused panes in a split).
+    @Published private(set) var dimInactivePanes: Bool = true
+    @Published private(set) var inactivePaneDim: Double = 0.5  // user-facing 0…1
+
+    /// Maps the user-facing 0…1 amount onto the usable 5%…95% dim band, so
+    /// inactive panes are never fully invisible nor imperceptibly dimmed.
+    var effectiveInactiveDim: Double { 0.05 + inactivePaneDim * 0.9 }
+
     /// The theme in effect right now (for the current system appearance).
     var activeThemeDef: GhosttyThemeDefinition? { systemIsDark ? darkThemeDef : lightThemeDef }
 
@@ -46,6 +54,14 @@ final class AppModel: ObservableObject {
 
     /// Lookup of opencode sessions by id so terminal rows can show metadata.
     @Published private(set) var opencodeByID: [String: OpencodeSession] = [:]
+
+    /// Bumped to request a sidebar visibility toggle (⌘K ⌘B); RootView observes
+    /// this and flips its `NavigationSplitView` column visibility.
+    @Published private(set) var sidebarToggleNonce = 0
+
+    /// Bumped to request opening the Settings window (⌘,); RootView observes this
+    /// and invokes the SwiftUI `openSettings` environment action.
+    @Published private(set) var openSettingsNonce = 0
 
     private let client: OpencodeClient?
     private var eventStream: OpencodeEventStream?
@@ -79,6 +95,8 @@ final class AppModel: ObservableObject {
 
         let appConfig = AppConfig.load()
         appliedConfig = appConfig
+        dimInactivePanes = appConfig.effectiveDimInactivePanes
+        inactivePaneDim = appConfig.effectiveInactivePaneDim
         let isDark = Self.osIsDark()
         systemIsDark = isDark
         let defs = Self.resolveDefs(appConfig)
@@ -177,6 +195,8 @@ final class AppModel: ObservableObject {
         KeyboardShortcuts.onKeyUp(for: .togglePoltergeist) { [weak self] in
             MainActor.assumeIsolated { self?.toggleAppVisibility() }
         }
+
+        installShortcutMonitor()
     }
 
     // MARK: - Global hotkey
@@ -192,6 +212,101 @@ final class AppModel: ObservableObject {
             if let window = NSApp.windows.first(where: { $0.canBecomeKey }) {
                 window.makeKeyAndOrderFront(nil)
             }
+        }
+    }
+
+    // MARK: - Terminal shortcut interception
+
+    private var shortcutMonitor: Any?
+    /// Timestamp of a pending ⌘K chord prefix; completed by ⌘B (within
+    /// `chordTimeout`) to toggle the sessions sidebar.
+    private var chordPrefixAt: Date?
+    private let chordTimeout: TimeInterval = 1.0
+
+    /// Requests a sidebar toggle (see `sidebarToggleNonce`).
+    func toggleSidebar() { sidebarToggleNonce &+= 1 }
+
+    /// Requests opening the Settings window (see `openSettingsNonce`).
+    func requestOpenSettings() { openSettingsNonce &+= 1 }
+
+    /// A focused Ghostty surface treats ⌘D/⌘W/etc. as its own key bindings and
+    /// swallows them via `performKeyEquivalent` before the menu can act. A local
+    /// key monitor runs *earlier* in event dispatch, so we claim the app's
+    /// terminal-context shortcuts here and let every other keystroke fall through
+    /// to the terminal untouched.
+    private func installShortcutMonitor() {
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let handled = MainActor.assumeIsolated { self.handleTerminalShortcut(event) }
+            return handled ? nil : event
+        }
+    }
+
+    /// Handles one of the app's known shortcuts when a terminal surface is the
+    /// first responder. Returns true if the event was consumed. When the sidebar
+    /// or Settings holds focus we return false so standard menu/⌘W handling runs.
+    private func handleTerminalShortcut(_ event: NSEvent) -> Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder,
+              NSStringFromClass(type(of: responder)).contains("TerminalView")
+        else { return false }
+
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard mods.contains(.command), mods.isDisjoint(with: [.option, .control]) else {
+            chordPrefixAt = nil  // any non-⌘ chord (incl. ⌃C) cancels a pending ⌘K
+            return false
+        }
+        let shift = mods.contains(.shift)
+        // Hold-to-repeat keystrokes are swallowed (so the terminal never sees a
+        // half-handled chord) but only fire their action on the initial press.
+        let fresh = !event.isARepeat
+
+        // Complete the ⌘K ⌘B chord (toggle sidebar). Any other key after ⌘K just
+        // cancels the prefix and is handled normally below.
+        if let startedAt = chordPrefixAt {
+            chordPrefixAt = nil
+            if fresh, !shift, event.keyCode == 11, Date().timeIntervalSince(startedAt) < chordTimeout {
+                toggleSidebar()
+                return true
+            }
+        }
+
+        // Physical key codes (standard ANSI layout): T=17, D=2, K=40, W=13,
+        // ]=30, [=33, comma=43, Q=12.
+        switch event.keyCode {
+        case 40 where !shift:  // ⌘K — start the sidebar-toggle chord (⌘K ⌘B)
+            if fresh { chordPrefixAt = Date() }
+            return true
+        case 43 where !shift:  // ⌘, — Settings
+            if fresh { requestOpenSettings() }
+            return true
+        case 12 where !shift:  // ⌘Q — quit
+            if fresh { NSApp.terminate(nil) }
+            return true
+        case 17:  // ⌘T new terminal / ⌘⇧T new opencode session
+            if fresh {
+                if shift {
+                    if server.isReady { Task { await newOpencodeSession() } }
+                } else {
+                    store.newSession()
+                }
+            }
+            return true
+        case 2:  // ⌘D split right / ⌘⇧D split down
+            if fresh { store.splitFocusedPane(shift ? .stacked : .sideBySide) }
+            return true
+        case 13:  // ⌘W close pane / ⌘⇧W close window
+            if fresh {
+                if shift { NSApp.keyWindow?.close() } else { store.closeFocusedPane() }
+            }
+            return true
+        case 30:  // ] : ⌘] next pane, ⌘⇧] next session
+            if fresh { shift ? store.selectNext() : store.focusNextPane() }
+            return true
+        case 33:  // [ : ⌘[ previous pane, ⌘⇧[ previous session
+            if fresh { shift ? store.selectPrevious() : store.focusPreviousPane() }
+            return true
+        default:
+            return false
         }
     }
 
@@ -217,10 +332,31 @@ final class AppModel: ObservableObject {
 
     private func applyConfig(_ newConfig: AppConfig) {
         appliedConfig = newConfig
+        dimInactivePanes = newConfig.effectiveDimInactivePanes
+        inactivePaneDim = newConfig.effectiveInactivePaneDim
         let defs = Self.resolveDefs(newConfig)
         lightThemeDef = defs.light
         darkThemeDef = defs.dark
         applyActiveAppearance()
+    }
+
+    // Inactive-pane dimming setters (persist + live-apply).
+
+    func setDimInactivePanes(_ on: Bool) {
+        var c = appliedConfig
+        c.dimInactivePanes = on
+        appliedConfig = c
+        AppConfig.save(c)
+        dimInactivePanes = on
+    }
+
+    func setInactivePaneDim(_ value: Double) {
+        let clamped = min(max(value, 0), 1)
+        var c = appliedConfig
+        c.inactivePaneDim = clamped
+        appliedConfig = c
+        AppConfig.save(c)
+        inactivePaneDim = clamped
     }
 
     /// Applies the active theme (for the current system appearance) to every
@@ -230,7 +366,7 @@ final class AppModel: ObservableObject {
         let terminalTheme = Self.terminalTheme(for: activeDef)
         let fontConfig = appliedConfig.fontConfiguration()
         store.updateAppearance(config: appliedConfig, terminalTheme: terminalTheme)
-        for session in store.sessions {
+        for session in store.allTerminals {
             session.applyAppearance(theme: terminalTheme, fontConfig: fontConfig)
         }
     }
