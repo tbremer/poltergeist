@@ -167,12 +167,6 @@ final class SessionStore: ObservableObject {
         return result
     }
 
-    /// Whether the selected tab is currently split into multiple panes.
-    var selectedTabHasSplits: Bool {
-        guard let tab = selectedSession else { return false }
-        return !tree(for: tab).isSingleLeaf
-    }
-
     /// The leaf the user is working in: the pane whose Ghostty surface currently
     /// holds keyboard focus, else the tab's own session. Read on demand (rather
     /// than tracked reactively) so focus changes don't churn the view tree and
@@ -226,6 +220,19 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Forces every pane except `id` to relinquish Ghostty focus, so only the
+    /// active pane renders a live (solid, blinking) cursor. New surfaces default
+    /// to focused, and AppKit only resigns the *previous* first responder, so
+    /// never-focused panes (e.g. siblings after a split) need an explicit nudge.
+    /// Pure side-effect on the views — no published state changes.
+    func unfocusOtherPanes(except id: TerminalSession.ID) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let content = window.contentView else { return }
+        for session in allTerminals where session.id != id {
+            Self.terminalView(for: session.state, in: content).map { _ = $0.resignFirstResponder() }
+        }
+    }
+
     /// Finds the Ghostty surface view bound to `state` (its delegate) within a
     /// view subtree.
     private static func terminalView(for state: TerminalViewState, in view: NSView) -> AppTerminalView? {
@@ -275,12 +282,12 @@ final class SessionStore: ObservableObject {
         }
         scheduleSave()
 
-        // Re-focus a surviving pane (the one now occupying the closed pane's
-        // slot, else the last) so the terminal keeps first-responder — otherwise
-        // the next ⌘W escapes the key monitor and closes the whole window.
+        // Re-focus the previous pane in the group (the neighbour before the one
+        // we closed), so focus loops back instead of leaving every pane showing
+        // its default cursor.
         let remaining = newTree.leaves
         if !remaining.isEmpty {
-            focusSurface(of: remaining[min(targetIndex, remaining.count - 1)])
+            focusSurface(of: remaining[max(0, targetIndex - 1)])
         }
     }
 

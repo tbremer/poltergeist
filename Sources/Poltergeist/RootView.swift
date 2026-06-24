@@ -47,9 +47,6 @@ struct RootView: View {
     }
     .preferredColorScheme(model.appearanceScheme)
     .background(WindowChromeConfigurator(backgroundColor: themeBackground))
-    .onChange(of: model.sidebarToggleNonce) { _, _ in
-      columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-    }
     .onChange(of: model.openSettingsNonce) { _, _ in openSettings() }
     .alert("Rename Session", isPresented: renamingBinding) {
       TextField("Name", text: $renameText)
@@ -425,12 +422,12 @@ private struct TerminalDetailView: View {
     } else {
       // Keep every tab's pane tree in the hierarchy so background terminals keep
       // rendering/receiving; only the selected tab is visible + interactive.
-      let tabIsSplit = store.selectedTabHasSplits
       ZStack {
         ForEach(store.sessions) { tab in
-          PaneTreeView(
-            node: store.tree(for: tab),
-            tabIsSplit: tabIsSplit,
+          let tree = store.tree(for: tab)
+          PaneTabView(
+            tree: tree,
+            tabIsSplit: !tree.isSingleLeaf,
             dimming: dimming,
             store: store
           )

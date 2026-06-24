@@ -8,98 +8,135 @@ struct PaneDimming: Equatable {
     var amount: Double  // effective dim, 0 = none … 1 = full
 }
 
-/// Renders a tab's pane tree. Leaves are terminal surfaces; splits are laid out
-/// by a custom container with a draggable divider whose position is stored on
-/// the node (so splitting one pane never disturbs the others).
-struct PaneTreeView: View {
-    let node: PaneNode
-    /// Whether this tab is split (so unfocused panes dim).
+/// Lays a tab's pane tree out as a *flat* set of positioned surfaces keyed by
+/// session id. Restructuring the tree (split/close) only changes each pane's
+/// frame — it never destroys or rebuilds a surviving pane's view, so scrollback
+/// and keyboard focus are preserved. Dividers are drawn on top and drive the
+/// stored split fractions.
+struct PaneTabView: View {
+    let tree: PaneNode
     let tabIsSplit: Bool
-    /// How unfocused panes are dimmed (user-configurable).
     let dimming: PaneDimming
     let store: SessionStore
 
+    /// Live divider drag (split id + proposed fraction), reflected in the layout
+    /// without touching the store until the drag ends.
+    @State private var drag: DragState?
+    /// Stable per-tab coordinate space for divider drags.
+    @State private var space = UUID().uuidString
+
+    private struct DragState { let id: UUID; let fraction: Double }
+
     var body: some View {
-        switch node {
-        case let .leaf(session):
-            PaneLeafView(session: session, tabIsSplit: tabIsSplit, dimming: dimming)
-        case let .split(id, axis, fraction, first, second):
-            SplitContainer(
-                splitID: id,
-                axis: axis,
-                fraction: fraction,
-                first: first,
-                second: second,
-                tabIsSplit: tabIsSplit,
-                dimming: dimming,
-                store: store
+        GeometryReader { geo in
+            let layout = PaneLayout.compute(
+                tree,
+                in: CGRect(origin: .zero, size: geo.size),
+                drag: drag.map { ($0.id, $0.fraction) }
             )
+            ZStack(alignment: .topLeading) {
+                ForEach(layout.panes, id: \.session.id) { placement in
+                    PaneLeafView(session: placement.session, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
+                        .frame(width: placement.rect.width, height: placement.rect.height)
+                        .position(x: placement.rect.midX, y: placement.rect.midY)
+                }
+                ForEach(layout.dividers) { divider in
+                    DividerHandle(
+                        divider: divider,
+                        space: space,
+                        onDrag: { drag = DragState(id: divider.id, fraction: $0) },
+                        onCommit: { store.setSplitFraction($0, splitID: divider.id); drag = nil },
+                        onReset: { store.setSplitFraction(0.5, splitID: divider.id) }
+                    )
+                    .frame(width: divider.rect.width, height: divider.rect.height)
+                    .position(x: divider.rect.midX, y: divider.rect.midY)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .coordinateSpace(name: space)
         }
     }
 }
 
-/// Lays out a split's two subtrees with a draggable divider. The divider's
-/// position comes from the node's `fraction` (single source of truth); a live
-/// `dragFraction` overlays it only while dragging for smooth feedback. Double-
-/// click equalizes every pane in the tab.
-private struct SplitContainer: View {
-    let splitID: UUID
-    let axis: SplitAxis
-    let fraction: Double
-    let first: PaneNode
-    let second: PaneNode
-    let tabIsSplit: Bool
-    let dimming: PaneDimming
-    let store: SessionStore
+/// Geometry for one tab: each leaf's frame plus the divider rects.
+private struct PaneLayout {
+    struct Placement { let session: TerminalSession; let rect: CGRect }
 
-    @State private var dragFraction: Double?
+    var panes: [Placement] = []
+    var dividers: [DividerLayout] = []
 
-    private static let dividerThickness: CGFloat = 6
-    private static let minFraction = 0.08
+    static let dividerThickness: CGFloat = 6
+    static let minFraction: Double = 0.08
 
-    private var horizontal: Bool { axis == .sideBySide }
+    static func compute(_ node: PaneNode, in rect: CGRect, drag: (id: UUID, fraction: Double)?) -> PaneLayout {
+        var layout = PaneLayout()
+        layout.add(node, in: rect, drag: drag)
+        return layout
+    }
 
-    var body: some View {
-        let space = splitID.uuidString
-        GeometryReader { geo in
-            let total = horizontal ? geo.size.width : geo.size.height
-            let available = max(0, total - Self.dividerThickness)
-            let f = min(max(dragFraction ?? fraction, Self.minFraction), 1 - Self.minFraction)
-            let firstSize = available * f
-            let secondSize = available - firstSize
-
-            if horizontal {
-                HStack(spacing: 0) {
-                    PaneTreeView(node: first, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
-                        .frame(width: firstSize, height: geo.size.height)
-                    divider(length: geo.size.height, available: available, space: space)
-                    PaneTreeView(node: second, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
-                        .frame(width: secondSize, height: geo.size.height)
-                }
-                .coordinateSpace(name: space)
-            } else {
-                VStack(spacing: 0) {
-                    PaneTreeView(node: first, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
-                        .frame(width: geo.size.width, height: firstSize)
-                    divider(length: geo.size.width, available: available, space: space)
-                    PaneTreeView(node: second, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
-                        .frame(width: geo.size.width, height: secondSize)
-                }
-                .coordinateSpace(name: space)
+    private mutating func add(_ node: PaneNode, in rect: CGRect, drag: (id: UUID, fraction: Double)?) {
+        switch node {
+        case let .leaf(session):
+            panes.append(Placement(session: session, rect: rect))
+        case let .split(id, axis, fraction, first, second):
+            let raw = (drag?.id == id) ? drag!.fraction : fraction
+            let f = min(max(raw, Self.minFraction), 1 - Self.minFraction)
+            let t = Self.dividerThickness
+            switch axis {
+            case .sideBySide:
+                let available = max(0, rect.width - t)
+                let firstW = available * f
+                add(first, in: CGRect(x: rect.minX, y: rect.minY, width: firstW, height: rect.height), drag: drag)
+                dividers.append(DividerLayout(
+                    id: id, axis: axis,
+                    rect: CGRect(x: rect.minX + firstW, y: rect.minY, width: t, height: rect.height),
+                    available: available, origin: rect.minX
+                ))
+                add(second, in: CGRect(x: rect.minX + firstW + t, y: rect.minY, width: available - firstW, height: rect.height), drag: drag)
+            case .stacked:
+                let available = max(0, rect.height - t)
+                let firstH = available * f
+                add(first, in: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: firstH), drag: drag)
+                dividers.append(DividerLayout(
+                    id: id, axis: axis,
+                    rect: CGRect(x: rect.minX, y: rect.minY + firstH, width: rect.width, height: t),
+                    available: available, origin: rect.minY
+                ))
+                add(second, in: CGRect(x: rect.minX, y: rect.minY + firstH + t, width: rect.width, height: available - firstH), drag: drag)
             }
         }
     }
+}
 
-    private func divider(length: CGFloat, available: CGFloat, space: String) -> some View {
+private struct DividerLayout: Identifiable {
+    let id: UUID
+    let axis: SplitAxis
+    let rect: CGRect
+    let available: CGFloat  // resizable length along the split axis
+    let origin: CGFloat     // start of the split region along the axis
+}
+
+/// A draggable divider. Maps the cursor's absolute position (in the tab's
+/// coordinate space) to a fraction — no feedback loop from the divider moving
+/// under the cursor. Double-click recenters it.
+private struct DividerHandle: View {
+    let divider: DividerLayout
+    let space: String
+    let onDrag: (Double) -> Void
+    let onCommit: (Double) -> Void
+    let onReset: () -> Void
+
+    private var horizontal: Bool { divider.axis == .sideBySide }
+
+    var body: some View {
         Color.clear
-            .frame(
-                width: horizontal ? Self.dividerThickness : length,
-                height: horizontal ? length : Self.dividerThickness
-            )
             .overlay {
                 Rectangle()
                     .fill(Color.primary.opacity(0.15))
-                    .frame(width: horizontal ? 1 : length, height: horizontal ? length : 1)
+                    .frame(
+                        width: horizontal ? 1 : divider.rect.width,
+                        height: horizontal ? divider.rect.height : 1
+                    )
             }
             .contentShape(Rectangle())
             .onHover { inside in
@@ -110,44 +147,39 @@ private struct SplitContainer: View {
                 }
             }
             .gesture(
-                // Track the cursor's absolute position in the split's (stable)
-                // coordinate space rather than a translation in the divider's own
-                // space — the divider moves as you drag, so a local translation
-                // feeds back on itself and oscillates. minimumDistance lets a
-                // stationary double-click reach the equalize tap handler.
-                DragGesture(minimumDistance: 4, coordinateSpace: .named(space))
-                    .onChanged { value in
-                        guard available > 0 else { return }
-                        let pos = horizontal ? value.location.x : value.location.y
-                        let newFirst = pos - Self.dividerThickness / 2
-                        dragFraction = min(max(newFirst / available, Self.minFraction), 1 - Self.minFraction)
-                    }
-                    .onEnded { _ in
-                        if let dragFraction { store.setSplitFraction(dragFraction, splitID: splitID) }
-                        dragFraction = nil
-                    }
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(space))
+                    .onChanged { onDrag(fraction(at: $0.location)) }
+                    .onEnded { onCommit(fraction(at: $0.location)) }
             )
-            // Double-click resets just this divider to 50/50 (its two immediate
-            // children); other dividers are untouched.
-            .onTapGesture(count: 2) { store.setSplitFraction(0.5, splitID: splitID) }
+            .onTapGesture(count: 2) { onReset() }
+    }
+
+    private func fraction(at point: CGPoint) -> Double {
+        guard divider.available > 0 else { return 0.5 }
+        let pos = horizontal ? point.x : point.y
+        let firstSize = pos - divider.origin - PaneLayout.dividerThickness / 2
+        return min(max(firstSize / divider.available, PaneLayout.minFraction), 1 - PaneLayout.minFraction)
     }
 }
 
 /// A single terminal pane. Keyboard focus is left entirely to the Ghostty
 /// surface (clicking it makes it first responder); we read its `isFocused`
-/// state only to fade inactive panes when the tab is split. We deliberately
-/// avoid `.terminalFocused` and store writes on focus — both forced first
-/// responder and the resulting view-tree churn intermittently swallowed
-/// keystrokes.
+/// state only to fade inactive panes when the tab is split. When a pane takes
+/// focus it tells the others to drop their (default-on) cursor so only the
+/// active pane blinks. We avoid `.terminalFocused` and store writes on focus —
+/// both forced first responder and view-tree churn swallowed keystrokes.
 private struct PaneLeafView: View {
     @ObservedObject var session: TerminalSession
     let tabIsSplit: Bool
     let dimming: PaneDimming
+    let store: SessionStore
 
     var body: some View {
-        // Fade only unfocused panes of a split, and only when enabled.
         let dim = tabIsSplit && dimming.enabled && !session.state.isFocused
         TerminalSurfaceView(context: session.state)
             .opacity(dim ? 1 - dimming.amount : 1)
+            .onChange(of: session.state.isFocused) { _, focused in
+                if focused { store.unfocusOtherPanes(except: session.id) }
+            }
     }
 }

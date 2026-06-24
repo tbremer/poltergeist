@@ -55,10 +55,6 @@ final class AppModel: ObservableObject {
     /// Lookup of opencode sessions by id so terminal rows can show metadata.
     @Published private(set) var opencodeByID: [String: OpencodeSession] = [:]
 
-    /// Bumped to request a sidebar visibility toggle (⌘K ⌘B); RootView observes
-    /// this and flips its `NavigationSplitView` column visibility.
-    @Published private(set) var sidebarToggleNonce = 0
-
     /// Bumped to request opening the Settings window (⌘,); RootView observes this
     /// and invokes the SwiftUI `openSettings` environment action.
     @Published private(set) var openSettingsNonce = 0
@@ -223,11 +219,26 @@ final class AppModel: ObservableObject {
     private var chordPrefixAt: Date?
     private let chordTimeout: TimeInterval = 1.0
 
-    /// Requests a sidebar toggle (see `sidebarToggleNonce`).
-    func toggleSidebar() { sidebarToggleNonce &+= 1 }
+    /// Toggles the sessions sidebar (⌘K ⌘B). Uses the same AppKit responder
+    /// action as the native toolbar toggle, which reliably collapses/expands the
+    /// NavigationSplitView's sidebar column.
+    func toggleSidebar() {
+        NSApp.sendAction(Selector(("toggleSidebar:")), to: nil, from: nil)
+    }
 
     /// Requests opening the Settings window (see `openSettingsNonce`).
     func requestOpenSettings() { openSettingsNonce &+= 1 }
+
+    /// True if `window` contains a Ghostty terminal surface anywhere in its view
+    /// tree — i.e. it's our main window rather than Settings/an alert panel.
+    private static func windowHostsTerminal(_ window: NSWindow?) -> Bool {
+        guard let root = window?.contentView else { return false }
+        func search(_ view: NSView) -> Bool {
+            if view is AppTerminalView { return true }
+            return view.subviews.contains(where: search)
+        }
+        return search(root)
+    }
 
     /// A focused Ghostty surface treats ⌘D/⌘W/etc. as its own key bindings and
     /// swallows them via `performKeyEquivalent` before the menu can act. A local
@@ -242,13 +253,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Handles one of the app's known shortcuts when a terminal surface is the
-    /// first responder. Returns true if the event was consumed. When the sidebar
-    /// or Settings holds focus we return false so standard menu/⌘W handling runs.
+    /// Handles one of the app's known shortcuts when the main terminal window is
+    /// key. Returns true if the event was consumed. We gate on the *window*
+    /// hosting a terminal — not on a terminal being first responder — because a
+    /// pane close briefly drops first-responder while the tree rebuilds; gating
+    /// on first-responder there would let ⌘W fall through to the default Close
+    /// Window (which, being the last window, quits the whole app). Settings and
+    /// other windows host no terminal, so they keep default behaviour.
     private func handleTerminalShortcut(_ event: NSEvent) -> Bool {
-        guard let responder = NSApp.keyWindow?.firstResponder,
-              NSStringFromClass(type(of: responder)).contains("TerminalView")
-        else { return false }
+        guard Self.windowHostsTerminal(NSApp.keyWindow) else { return false }
 
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         guard mods.contains(.command), mods.isDisjoint(with: [.option, .control]) else {
