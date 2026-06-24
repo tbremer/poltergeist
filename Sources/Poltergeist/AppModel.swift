@@ -10,12 +10,25 @@ import KeyboardShortcuts
 enum ThemeSlot: Hashable { case light, dark }
 
 extension KeyboardShortcuts.Name {
-    /// Global hotkey to summon/hide Poltergeist from anywhere. Ships with a
-    /// default of ⌃⌥⌘P; the user can rebind it in Settings → Keyboard.
+    /// Global hotkey to summon/hide Poltergeist from anywhere (system-wide).
     static let togglePoltergeist = Self(
         "togglePoltergeist",
         initial: .init(.p, modifiers: [.control, .option, .command])
     )
+
+    // App-local shortcuts. These are NOT registered as global hotkeys (no
+    // `onKeyUp`/`onKeyDown` handler) — AppModel's key monitor matches events
+    // against them while the main window is focused. Defaults mirror the
+    // previous hardcoded bindings; all are rebindable in Settings → Keyboard.
+    static let newTerminal = Self("newTerminal", initial: .init(.t, modifiers: [.command]))
+    static let newOpencodeSession = Self("newOpencodeSession", initial: .init(.t, modifiers: [.command, .shift]))
+    static let nextSession = Self("nextSession", initial: .init(.rightBracket, modifiers: [.command, .shift]))
+    static let previousSession = Self("previousSession", initial: .init(.leftBracket, modifiers: [.command, .shift]))
+    static let splitRight = Self("splitRight", initial: .init(.d, modifiers: [.command]))
+    static let splitDown = Self("splitDown", initial: .init(.d, modifiers: [.command, .shift]))
+    static let focusNextPane = Self("focusNextPane", initial: .init(.rightBracket, modifiers: [.command]))
+    static let focusPreviousPane = Self("focusPreviousPane", initial: .init(.leftBracket, modifiers: [.command]))
+    static let toggleSidebar = Self("toggleSidebar", initial: .init(.b, modifiers: [.command, .option]))
 }
 
 /// Top-level app state: owns the opencode server, the terminal session store,
@@ -214,10 +227,6 @@ final class AppModel: ObservableObject {
     // MARK: - Terminal shortcut interception
 
     private var shortcutMonitor: Any?
-    /// Timestamp of a pending ⌘K chord prefix; completed by ⌘B (within
-    /// `chordTimeout`) to toggle the sessions sidebar.
-    private var chordPrefixAt: Date?
-    private let chordTimeout: TimeInterval = 1.0
 
     /// Toggles the sessions sidebar (⌘K ⌘B). Uses the same AppKit responder
     /// action as the native toolbar toggle, which reliably collapses/expands the
@@ -261,33 +270,35 @@ final class AppModel: ObservableObject {
     /// Window (which, being the last window, quits the whole app). Settings and
     /// other windows host no terminal, so they keep default behaviour.
     private func handleTerminalShortcut(_ event: NSEvent) -> Bool {
-        guard Self.windowHostsTerminal(NSApp.keyWindow) else { return false }
+        // Every shortcut carries ⌘/⌥/⌃, so plain typing skips all of this work
+        // (no window search, no shortcut lookups).
+        guard !event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+              Self.windowHostsTerminal(NSApp.keyWindow)
+        else { return false }
 
+        let fresh = !event.isARepeat  // only act on the initial press; swallow repeats
+
+        // User-configurable shortcuts (Settings → Keyboard).
+        if matches(event, .newTerminal) { if fresh { store.newSession() }; return true }
+        if matches(event, .newOpencodeSession) {
+            if fresh, server.isReady { Task { await newOpencodeSession() } }
+            return true
+        }
+        if matches(event, .nextSession) { if fresh { store.selectNext() }; return true }
+        if matches(event, .previousSession) { if fresh { store.selectPrevious() }; return true }
+        if matches(event, .splitRight) { if fresh { store.splitFocusedPane(.sideBySide) }; return true }
+        if matches(event, .splitDown) { if fresh { store.splitFocusedPane(.stacked) }; return true }
+        if matches(event, .focusNextPane) { if fresh { store.focusNextPane() }; return true }
+        if matches(event, .focusPreviousPane) { if fresh { store.focusPreviousPane() }; return true }
+        if matches(event, .toggleSidebar) { if fresh { toggleSidebar() }; return true }
+
+        // Fixed shortcuts (not configurable). Key codes (ANSI): W=13, comma=43, Q=12.
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        guard mods.contains(.command), mods.isDisjoint(with: [.option, .control]) else {
-            chordPrefixAt = nil  // any non-⌘ chord (incl. ⌃C) cancels a pending ⌘K
-            return false
-        }
+        guard mods.contains(.command), mods.isDisjoint(with: [.option, .control]) else { return false }
         let shift = mods.contains(.shift)
-        // Hold-to-repeat keystrokes are swallowed (so the terminal never sees a
-        // half-handled chord) but only fire their action on the initial press.
-        let fresh = !event.isARepeat
-
-        // Complete the ⌘K ⌘B chord (toggle sidebar). Any other key after ⌘K just
-        // cancels the prefix and is handled normally below.
-        if let startedAt = chordPrefixAt {
-            chordPrefixAt = nil
-            if fresh, !shift, event.keyCode == 11, Date().timeIntervalSince(startedAt) < chordTimeout {
-                toggleSidebar()
-                return true
-            }
-        }
-
-        // Physical key codes (standard ANSI layout): T=17, D=2, K=40, W=13,
-        // ]=30, [=33, comma=43, Q=12.
         switch event.keyCode {
-        case 40 where !shift:  // ⌘K — start the sidebar-toggle chord (⌘K ⌘B)
-            if fresh { chordPrefixAt = Date() }
+        case 13:  // ⌘W close pane / ⌘⇧W close window
+            if fresh { if shift { NSApp.keyWindow?.close() } else { store.closeFocusedPane() } }
             return true
         case 43 where !shift:  // ⌘, — Settings
             if fresh { requestOpenSettings() }
@@ -295,32 +306,15 @@ final class AppModel: ObservableObject {
         case 12 where !shift:  // ⌘Q — quit
             if fresh { NSApp.terminate(nil) }
             return true
-        case 17:  // ⌘T new terminal / ⌘⇧T new opencode session
-            if fresh {
-                if shift {
-                    if server.isReady { Task { await newOpencodeSession() } }
-                } else {
-                    store.newSession()
-                }
-            }
-            return true
-        case 2:  // ⌘D split right / ⌘⇧D split down
-            if fresh { store.splitFocusedPane(shift ? .stacked : .sideBySide) }
-            return true
-        case 13:  // ⌘W close pane / ⌘⇧W close window
-            if fresh {
-                if shift { NSApp.keyWindow?.close() } else { store.closeFocusedPane() }
-            }
-            return true
-        case 30:  // ] : ⌘] next pane, ⌘⇧] next session
-            if fresh { shift ? store.selectNext() : store.focusNextPane() }
-            return true
-        case 33:  // [ : ⌘[ previous pane, ⌘⇧[ previous session
-            if fresh { shift ? store.selectPrevious() : store.focusPreviousPane() }
-            return true
         default:
             return false
         }
+    }
+
+    /// Whether `event` matches the (configurable) shortcut bound to `name`.
+    private func matches(_ event: NSEvent, _ name: KeyboardShortcuts.Name) -> Bool {
+        guard let shortcut = KeyboardShortcuts.getShortcut(for: name) else { return false }
+        return KeyboardShortcuts.Shortcut(event: event) == shortcut
     }
 
     // MARK: - Live config reload

@@ -162,18 +162,56 @@ private struct HoverHighlightButtonStyle: ButtonStyle {
 
 // MARK: - Keyboard
 
-/// Records the global summon/hide hotkey. The Recorder persists the binding and
-/// warns about conflicts; AppModel registers the matching listener at launch.
+/// Lists every keyboard shortcut grouped by area. Configurable ones use the
+/// same recorder as the global hotkey; fixed ones are shown for reference.
 private struct ShortcutSettings: View {
     var body: some View {
         Form {
-            KeyboardShortcuts.Recorder("Toggle Poltergeist:", name: .togglePoltergeist)
-            Text("Press this shortcut from any app to bring Poltergeist to the front, or hide it when it's already frontmost.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Section("Sessions") {
+                KeyboardShortcuts.Recorder("New Terminal", name: .newTerminal)
+                KeyboardShortcuts.Recorder("New OpenCode Session", name: .newOpencodeSession)
+                KeyboardShortcuts.Recorder("Next Session", name: .nextSession)
+                KeyboardShortcuts.Recorder("Previous Session", name: .previousSession)
+            }
+
+            Section("Panes") {
+                KeyboardShortcuts.Recorder("Split Right", name: .splitRight)
+                KeyboardShortcuts.Recorder("Split Down", name: .splitDown)
+                KeyboardShortcuts.Recorder("Focus Next Pane", name: .focusNextPane)
+                KeyboardShortcuts.Recorder("Focus Previous Pane", name: .focusPreviousPane)
+                FixedShortcutRow("Close Pane", "⌘W")
+            }
+
+            Section("Window & App") {
+                KeyboardShortcuts.Recorder("Toggle Sidebar", name: .toggleSidebar)
+                KeyboardShortcuts.Recorder("Show / Hide Poltergeist", name: .togglePoltergeist)
+                FixedShortcutRow("Close Window", "⇧⌘W")
+                FixedShortcutRow("Settings", "⌘,")
+                FixedShortcutRow("Quit", "⌘Q")
+            }
+
+            Section {
+                Text("“Show / Hide Poltergeist” works from any app; the rest apply while Poltergeist is focused.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// A non-editable shortcut row (for the fixed close/settings/quit commands).
+private struct FixedShortcutRow: View {
+    let label: String
+    let keys: String
+    init(_ label: String, _ keys: String) {
+        self.label = label
+        self.keys = keys
+    }
+    var body: some View {
+        LabeledContent(label) {
+            Text(keys).foregroundStyle(.secondary)
+        }
     }
 }

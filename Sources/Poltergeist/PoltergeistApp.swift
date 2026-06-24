@@ -18,34 +18,27 @@ struct PoltergeistApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .commands {
+            // These actions are driven by AppModel's key monitor against the
+            // user-configurable shortcuts (Settings → Keyboard), so the menu
+            // items are click targets without hardcoded key equivalents. The
+            // fixed ⌘W/⌘⇧W close commands keep their equivalents.
             CommandMenu("Session") {
                 Button("New Terminal") { model.store.newSession() }
-                    .keyboardShortcut("t", modifiers: .command)
                 Button("New OpenCode Session") { Task { await model.newOpencodeSession() } }
-                    .keyboardShortcut("t", modifiers: [.command, .shift])
                     .disabled(!model.server.isReady)
                 Divider()
                 Button("Split Right") { model.store.splitFocusedPane(.sideBySide) }
-                    .keyboardShortcut("d", modifiers: .command)
                 Button("Split Down") { model.store.splitFocusedPane(.stacked) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
                 Divider()
-                // ⌘W is intercepted by AppModel's key monitor while a terminal is
-                // focused (the Ghostty surface would otherwise swallow it); this
-                // menu entry is for mouse use + discoverability.
                 Button("Close Pane") { model.store.closeFocusedPane() }
                 Button("Close Window") { NSApp.keyWindow?.close() }
                     .keyboardShortcut("w", modifiers: [.command, .shift])
                 Divider()
                 Button("Focus Next Pane") { model.store.focusNextPane() }
-                    .keyboardShortcut("]", modifiers: .command)
                 Button("Focus Previous Pane") { model.store.focusPreviousPane() }
-                    .keyboardShortcut("[", modifiers: .command)
                 Divider()
                 Button("Next Session") { model.store.selectNext() }
-                    .keyboardShortcut("]", modifiers: [.command, .shift])
                 Button("Previous Session") { model.store.selectPrevious() }
-                    .keyboardShortcut("[", modifiers: [.command, .shift])
             }
         }
 
