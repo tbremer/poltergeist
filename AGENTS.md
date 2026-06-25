@@ -5,7 +5,7 @@ A map of Poltergeist for coding agents — pointers and non-obvious facts, not a
 ## What this is
 A **macOS-only, single-window SwiftUI terminal emulator** built on libghostty (`GhosttyKit`/`GhosttyTerminal`) that is "OpenCode-aware": it spawns and supervises a local `opencode serve` process and lists its sessions in a sidebar. Two unusual traits drive everything:
 - It is a **real terminal** — each session is a PTY (via a tiny C shim, `CPty`) feeding GhosttyKit's `.inMemory` backend. This requires running **without App Sandbox** (an SPM executable, not a sandboxed .app), and libghostty is statically linked.
-- It is **not a document app**: one window. `AppDelegate.applicationShouldTerminateAfterLastWindowClosed` returns `true`, so closing the last window quits the process (see Gotchas — this is why ⌘W routing matters).
+- It is **not a document app**: one window, but it stays alive when that window closes (`AppDelegate.applicationShouldTerminateAfterLastWindowClosed` is `false`). `AppModel` (terminals + opencode server) lives at app scope, so it survives a close; `applicationShouldHandleReopen` brings the window back (dock click), and the global hotkey re-shows it after a hide.
 
 ## Core mental model
 Two parallel "session" concepts that are easy to conflate:
@@ -63,7 +63,7 @@ OpenCode trace: `AppModel.init` → `OpencodeServerManager.start` (spawns `openc
 - Deps: `libghostty-spm` pinned `exact: 1.2.5`; `KeyboardShortcuts` `from: 3.0.0`.
 
 ## Gotchas / known issues
-- ⌘W must reach `closeFocusedPane`. If focus is briefly lost and ⌘W falls through to the default File→Close, it closes the only window and **quits the app**. The `windowHostsTerminal` monitor guard + re-focusing a neighbor pane on close both exist to prevent this.
+- ⌘W must reach `closeFocusedPane`, not the default File→Close (which closes the window). The `windowHostsTerminal` monitor guard + re-focusing a neighbor pane on close keep ⌘W on the pane. Closing the window no longer quits the app, but it still tears down the on-screen surfaces (scrollback resets on reopen; the PTYs/sessions survive).
 - New Ghostty surfaces default to **focused** (solid blinking cursor) and there is no public `setFocus`. So `PaneLeafView`, on gaining focus, calls `SessionStore.unfocusOtherPanes` (forces `resignFirstResponder` on the others). Without it, every pane blinks.
 - Do not write `@Published` `SessionStore` state in response to a focus change — the resulting re-render drops the terminal's first responder and breaks typing. `unfocusOtherPanes` is intentionally a pure view side-effect.
 - `PTYProcess` spawns its child **lazily on the first non-empty resize** (GhosttyKit drops bytes until the surface is attached).

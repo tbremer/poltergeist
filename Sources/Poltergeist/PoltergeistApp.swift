@@ -65,8 +65,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Keep running when the window closes — AppModel (terminals + the opencode
+    /// server) lives at app scope and survives, so closing is just hiding the UI.
+    /// Reopen via the dock icon or the global show/hide hotkey.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    /// Reopen on dock click: front an existing (e.g. minimized) window, else let
+    /// SwiftUI recreate the WindowGroup window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        guard !hasVisibleWindows else { return true }
+        if let window = sender.windows.first(where: { $0.canBecomeKey }) {
+            window.makeKeyAndOrderFront(nil)
+            return false
+        }
+        return true  // no window to restore → SwiftUI opens a fresh one
     }
 
     /// Makes .help() tooltips appear quickly. AppKit's default hover delay is
