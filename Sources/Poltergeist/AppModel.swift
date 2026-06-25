@@ -81,14 +81,8 @@ final class AppModel: ObservableObject {
     private var eventStream: OpencodeEventStream?
     private var cancellables = Set<AnyCancellable>()
 
-    private var lightWork: DispatchWorkItem?
-    private var lightTimer: Timer?
-    private var fullTimer: Timer?
-    private var refreshEnabled = false
-
-    /// Project worktrees discovered by the full refresh, cached so light
-    /// refreshes don't re-enumerate every time.
-    private var cachedWorktrees: Set<String> = []
+    private var refreshWork: DispatchWorkItem?
+    private var refreshTimer: Timer?
 
     /// Suppress refreshes until this time. Set briefly when a terminal spawns so
     /// the new shell's startup capability queries get the main thread — otherwise
@@ -133,25 +127,32 @@ final class AppModel: ObservableObject {
         client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
 
+        // Show last launch's sessions instantly; the background refresh reconciles
+        // once the server is up. Give the restored terminal's startup a head start
+        // before the first fetch contends for the main thread.
+        hydrateOpencodeCache()
+        refreshQuietUntil = Date().addingTimeInterval(2.0)
+
         server.start()
 
         if let base = server.baseURL {
             let stream = OpencodeEventStream(baseURL: base)
-            stream.onEvent = { [weak self] in self?.scheduleLightRefresh() }
+            stream.onEvent = { [weak self] in self?.scheduleRefresh() }
             stream.start()
             eventStream = stream
         }
 
         store.$selectedID
-            .sink { [weak self] _ in self?.scheduleLightRefresh() }
+            .sink { [weak self] _ in self?.scheduleRefresh() }
             .store(in: &cancellables)
         // A new terminal means a shell is about to spawn and query the terminal;
         // keep the main thread free briefly so the replies aren't delayed.
         store.$sessions
             .sink { [weak self] sessions in self?.noteSessionCount(sessions.count) }
             .store(in: &cancellables)
+        // Refresh as soon as the server reports ready (don't wait for the timer).
         server.$status
-            .sink { [weak self] status in if status == .running { self?.scheduleLightRefresh() } }
+            .sink { [weak self] status in if status == .running { self?.scheduleRefresh() } }
             .store(in: &cancellables)
         // Surface server status changes (starting → running) to the UI.
         server.objectWillChange
@@ -163,25 +164,17 @@ final class AppModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.server.stop() }
-        }
-
-        // Frequent, cheap refresh of the active project only.
-        lightTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleLightRefresh() }
-        }
-        // Occasional full sweep across all projects (also prunes deleted sessions).
-        fullTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.requestFullRefresh() }
-        }
-
-        // Defer the first load so it doesn't contend with terminal startup on the
-        // main thread (late capability-query replies leak to the prompt as garble).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             MainActor.assumeIsolated {
-                self?.refreshEnabled = true
-                self?.requestFullRefresh()
+                // Flush the latest in-memory list (no network — the request
+                // wouldn't finish before exit, and the server is about to stop).
+                self?.saveOpencodeCache()
+                self?.server.stop()
             }
+        }
+
+        // Periodic reconcile (also catches sessions created in other tools).
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
 
         // Live-apply config.json changes (theme/font) without relaunch.
@@ -452,70 +445,51 @@ final class AppModel: ObservableObject {
 
     private var quietDelay: TimeInterval { max(0.3, refreshQuietUntil.timeIntervalSinceNow) }
 
-    private func scheduleLightRefresh() {
-        guard refreshEnabled else { return }
-        lightWork?.cancel()
+    /// Debounced refresh. Coalesces the bursts of SSE events + selection changes
+    /// and waits out the quiet window so it never contends with terminal startup.
+    private func scheduleRefresh() {
+        refreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                Task { await self.lightRefresh() }
+                Task { await self.refresh() }
             }
         }
-        lightWork = work
+        refreshWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + quietDelay, execute: work)
     }
 
-    private func requestFullRefresh() {
-        guard refreshEnabled else { return }
-        // Skip while quiet; a later sweep/light refresh will catch up.
-        guard refreshQuietUntil.timeIntervalSinceNow <= 0 else { return }
-        Task { await fullRefresh() }
-    }
+    // MARK: - Refresh implementation
 
-    // MARK: - Refresh implementations
-
-    /// Light: only the active terminal's project (+ attached terminals + home).
-    /// Upserts into the cache so other groups are left intact.
-    private func lightRefresh() async {
-        var directories: Set<String> = [homeDirectory]
-        if let active = store.selectedSession?.currentDirectory { directories.insert(active) }
-        for session in store.sessions where session.opencodeSessionID != nil {
-            directories.insert(session.currentDirectory)
-        }
-        let fetched = await fetchSessions(directories: directories)
-        for (id, session) in fetched { opencodeByID[id] = session }
-        rebuildTree()
-    }
-
-    /// Full: enumerate all projects and replace the cache (also prunes deletions).
-    private func fullRefresh() async {
+    /// Loads every top-level session in one request and groups them by directory
+    /// in `rebuildTree`. Bails without touching the cache when the server is
+    /// unreachable, so a transient failure never blanks the sidebar. Persists the
+    /// result so the next launch can show it instantly.
+    private func refresh() async {
         guard let client else { return }
-        let projects = (try? await client.listProjects()) ?? []
-        cachedWorktrees = Set(projects.compactMap(\.worktree))
+        guard let sessions = try? await client.listSessions(directory: nil) else { return }
+        var byID: [String: OpencodeSession] = [:]
+        for session in sessions where session.parentID == nil {
+            byID[session.id] = session
+        }
+        opencodeByID = byID
+        rebuildTree()
+        saveOpencodeCache()
+    }
 
-        var directories = cachedWorktrees
-        directories.insert(homeDirectory)
-        if let active = store.selectedSession?.currentDirectory { directories.insert(active) }
+    // MARK: - Session cache (instant sidebar on next launch)
 
-        let fetched = await fetchSessions(directories: directories)
-        opencodeByID = fetched
+    private func hydrateOpencodeCache() {
+        guard let data = try? Data(contentsOf: AppPaths.opencodeCacheFile),
+              let sessions = try? JSONDecoder().decode([OpencodeSession].self, from: data)
+        else { return }
+        opencodeByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         rebuildTree()
     }
 
-    private func fetchSessions(directories: Set<String>) async -> [String: OpencodeSession] {
-        guard let client else { return [:] }
-        var byID: [String: OpencodeSession] = [:]
-        await withTaskGroup(of: [OpencodeSession].self) { group in
-            for directory in directories {
-                group.addTask { (try? await client.listSessions(directory: directory)) ?? [] }
-            }
-            for await sessions in group {
-                for session in sessions where session.parentID == nil {
-                    byID[session.id] = session
-                }
-            }
-        }
-        return byID
+    private func saveOpencodeCache() {
+        guard let data = try? JSONEncoder().encode(Array(opencodeByID.values)) else { return }
+        try? data.write(to: AppPaths.opencodeCacheFile, options: .atomic)
     }
 
     private func rebuildTree() {
@@ -629,7 +603,7 @@ final class AppModel: ObservableObject {
         opencodeByID[created.id] = created
         rebuildTree()
         openOpencodeSession(created)
-        scheduleLightRefresh()
+        scheduleRefresh()
     }
 
     /// Permanently deletes an opencode session from the server, closing any
@@ -656,7 +630,7 @@ final class AppModel: ObservableObject {
             opencodeByID[session.id] = nil
         }
         rebuildTree()
-        scheduleLightRefresh()
+        scheduleRefresh()
     }
 
     /// Renames an opencode session server-side (PATCH), with an optimistic
@@ -673,6 +647,6 @@ final class AppModel: ObservableObject {
             store.rename(attached.id, to: title)
         }
         rebuildTree()
-        scheduleLightRefresh()
+        scheduleRefresh()
     }
 }

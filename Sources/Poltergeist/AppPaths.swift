@@ -20,4 +20,10 @@ enum AppPaths {
     static var configFile: URL {
         supportDirectory.appendingPathComponent("config.json")
     }
+
+    /// Cache of the last-known opencode sessions, hydrated on launch so the
+    /// sidebar is populated before the server is up.
+    static var opencodeCacheFile: URL {
+        supportDirectory.appendingPathComponent("opencode-cache.json")
+    }
 }
