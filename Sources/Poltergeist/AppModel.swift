@@ -232,7 +232,7 @@ final class AppModel: ObservableObject {
     /// action as the native toolbar toggle, which reliably collapses/expands the
     /// NavigationSplitView's sidebar column.
     func toggleSidebar() {
-        NSApp.sendAction(Selector(("toggleSidebar:")), to: nil, from: nil)
+        NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
     }
 
     /// Requests opening the Settings window (see `openSettingsNonce`).
