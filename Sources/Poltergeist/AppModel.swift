@@ -52,6 +52,11 @@ final class AppModel: ObservableObject {
     /// inactive panes are never fully invisible nor imperceptibly dimmed.
     var effectiveInactiveDim: Double { 0.05 + inactivePaneDim * 0.9 }
 
+    /// Terminal font (nil family = libghostty's default). Applied live + used for
+    /// new sessions.
+    @Published private(set) var fontFamily: String?
+    @Published private(set) var fontSize: Float = 14
+
     /// The theme in effect right now (for the current system appearance).
     var activeThemeDef: GhosttyThemeDefinition? { systemIsDark ? darkThemeDef : lightThemeDef }
 
@@ -106,6 +111,8 @@ final class AppModel: ObservableObject {
         appliedConfig = appConfig
         dimInactivePanes = appConfig.effectiveDimInactivePanes
         inactivePaneDim = appConfig.effectiveInactivePaneDim
+        fontFamily = appConfig.fontFamily
+        fontSize = appConfig.effectiveFontSize
         let isDark = Self.osIsDark()
         systemIsDark = isDark
         let defs = Self.resolveDefs(appConfig)
@@ -341,6 +348,8 @@ final class AppModel: ObservableObject {
         appliedConfig = newConfig
         dimInactivePanes = newConfig.effectiveDimInactivePanes
         inactivePaneDim = newConfig.effectiveInactivePaneDim
+        fontFamily = newConfig.fontFamily
+        fontSize = newConfig.effectiveFontSize
         let defs = Self.resolveDefs(newConfig)
         lightThemeDef = defs.light
         darkThemeDef = defs.dark
@@ -364,6 +373,30 @@ final class AppModel: ObservableObject {
         appliedConfig = c
         AppConfig.save(c)
         inactivePaneDim = clamped
+    }
+
+    /// Sets the terminal font family (nil/empty = libghostty default); persists
+    /// + live-applies to every open terminal.
+    func setFontFamily(_ family: String?) {
+        var c = appliedConfig
+        let trimmed = family?.trimmingCharacters(in: .whitespaces)
+        c.fontFamily = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        applyFontConfig(c)
+    }
+
+    /// Sets the terminal font size (points); persists + live-applies.
+    func setFontSize(_ size: Float) {
+        var c = appliedConfig
+        c.fontSize = min(max(size, 6), 72)
+        applyFontConfig(c)
+    }
+
+    private func applyFontConfig(_ newConfig: AppConfig) {
+        appliedConfig = newConfig
+        fontFamily = newConfig.fontFamily
+        fontSize = newConfig.effectiveFontSize
+        AppConfig.save(newConfig)
+        applyActiveAppearance()
     }
 
     /// Applies the active theme (for the current system appearance) to every

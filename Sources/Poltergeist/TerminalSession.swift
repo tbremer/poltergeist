@@ -99,7 +99,8 @@ final class TerminalSession: ObservableObject, Identifiable {
         if let fontFamily, !fontFamily.isEmpty {
             terminalConfiguration = terminalConfiguration.fontFamily(fontFamily)
         }
-        terminalConfiguration = terminalConfiguration.fontSize(fontSize).windowPaddingY(0)
+        // fontThicken(false) matches Ghostty's default; the library's default is true.
+        terminalConfiguration = terminalConfiguration.fontSize(fontSize).windowPaddingY(0).fontThicken(false)
 
         let state = TerminalViewState(theme: theme, terminalConfiguration: terminalConfiguration)
         state.configuration = TerminalSurfaceOptions(

@@ -29,12 +29,16 @@ struct AppConfig: Codable, Equatable {
     var effectiveInactivePaneDim: Double { min(max(inactivePaneDim ?? 0.5, 0), 1) }
 
     /// The font portion of the config as a `TerminalConfiguration`.
+    ///
+    /// `fontThicken(false)` matches Ghostty's own default — libghostty-spm's
+    /// `TerminalConfiguration.default` forces `font-thicken = true`, which makes
+    /// text noticeably bolder/softer than native Ghostty.
     func fontConfiguration() -> TerminalConfiguration {
         var configuration = TerminalConfiguration()
         if let fontFamily, !fontFamily.isEmpty {
             configuration = configuration.fontFamily(fontFamily)
         }
-        return configuration.fontSize(effectiveFontSize).windowPaddingY(0)
+        return configuration.fontSize(effectiveFontSize).windowPaddingY(0).fontThicken(false)
     }
 
     static func load() -> AppConfig {

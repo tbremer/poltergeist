@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import GhosttyTheme
 import KeyboardShortcuts
@@ -72,11 +73,66 @@ private struct ThemeSettings: View {
             .listStyle(.plain)
 
             Divider()
-            InactiveDimmingControls(model: model)
-                .padding(12)
+            VStack(alignment: .leading, spacing: 10) {
+                FontControls(model: model)
+                InactiveDimmingControls(model: model)
+            }
+            .padding(12)
         }
         .onAppear { slot = model.systemIsDark ? .dark : .light }
     }
+}
+
+/// Terminal font family + size. Lists every installed font family, persisting +
+/// live-applying via AppModel. (Monospaced fonts render best, but any is allowed.)
+private struct FontControls: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Font")
+                Spacer(minLength: 12)
+                Picker("", selection: Binding(
+                    get: { model.fontFamily },
+                    set: { model.setFontFamily($0) }
+                )) {
+                    Text("System Default").tag(String?.none)
+                    ForEach(familyOptions, id: \.self) { family in
+                        Text(family).tag(String?.some(family))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 240)
+            }
+            HStack {
+                Text("Font Size")
+                Spacer(minLength: 12)
+                Text("\(Int(model.fontSize)) pt")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Stepper(value: Binding(
+                    get: { model.fontSize },
+                    set: { model.setFontSize($0) }
+                ), in: 8 ... 32, step: 1) { EmptyView() }
+                    .labelsHidden()
+                    .fixedSize()
+            }
+        }
+    }
+
+    /// All installed font families (plus the current value if somehow missing).
+    private var familyOptions: [String] {
+        var families = Self.allFamilies
+        if let current = model.fontFamily, !current.isEmpty, !families.contains(current) {
+            families.append(current)
+            families.sort()
+        }
+        return families
+    }
+
+    private static let allFamilies: [String] =
+        NSFontManager.shared.availableFontFamilies.sorted()
 }
 
 /// Controls for how unfocused panes are dimmed when a tab is split.
