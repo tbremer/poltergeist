@@ -83,6 +83,9 @@ final class AppModel: ObservableObject {
 
     private var refreshWork: DispatchWorkItem?
     private var refreshTimer: Timer?
+    /// When the last refresh ran, to throttle the periodic poll (15s with a
+    /// visible window, 30s when headless). User/SSE-driven refreshes ignore this.
+    private var lastRefreshAt = Date.distantPast
 
     /// Suppress refreshes until this time. Set briefly when a terminal spawns so
     /// the new shell's startup capability queries get the main thread — otherwise
@@ -173,8 +176,9 @@ final class AppModel: ObservableObject {
         }
 
         // Periodic reconcile (also catches sessions created in other tools).
+        // Fires every 15s but only polls every 30s while no window is visible.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleRefresh() }
+            MainActor.assumeIsolated { self?.tickRefresh() }
         }
 
         // Live-apply config.json changes (theme/font) without relaunch.
@@ -237,6 +241,12 @@ final class AppModel: ObservableObject {
 
     /// Requests opening the Settings window (see `openSettingsNonce`).
     func requestOpenSettings() { openSettingsNonce &+= 1 }
+
+    /// True when a content window is on screen (false when closed, hidden, or
+    /// minimized) — used to slow the background poll.
+    private static func hasVisibleWindow() -> Bool {
+        NSApp.windows.contains { $0.isVisible && $0.canBecomeKey }
+    }
 
     /// True if `window` contains a Ghostty terminal surface anywhere in its view
     /// tree — i.e. it's our main window rather than Settings/an alert panel.
@@ -445,6 +455,14 @@ final class AppModel: ObservableObject {
 
     private var quietDelay: TimeInterval { max(0.3, refreshQuietUntil.timeIntervalSinceNow) }
 
+    /// Periodic poll from the timer: skips unless enough time has passed for the
+    /// current cadence (15s with a window on screen, 30s when headless).
+    private func tickRefresh() {
+        let minInterval: TimeInterval = Self.hasVisibleWindow() ? 15 : 30
+        guard Date().timeIntervalSince(lastRefreshAt) >= minInterval - 1 else { return }
+        scheduleRefresh()
+    }
+
     /// Debounced refresh. Coalesces the bursts of SSE events + selection changes
     /// and waits out the quiet window so it never contends with terminal startup.
     private func scheduleRefresh() {
@@ -466,6 +484,7 @@ final class AppModel: ObservableObject {
     /// unreachable, so a transient failure never blanks the sidebar. Persists the
     /// result so the next launch can show it instantly.
     private func refresh() async {
+        lastRefreshAt = Date()  // mark the poll time for the timer's cadence gate
         guard let client else { return }
         guard let sessions = try? await client.listSessions(directory: nil) else { return }
         var byID: [String: OpencodeSession] = [:]
