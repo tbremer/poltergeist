@@ -31,17 +31,6 @@ struct OpencodeClient: Sendable {
         return try JSONDecoder().decode([OpencodeSession].self, from: data)
     }
 
-    /// Lists all known projects.
-    func listProjects() async throws -> [OpencodeProject] {
-        var request = URLRequest(url: baseURL.appendingPathComponent("project"))
-        request.timeoutInterval = 5
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder().decode([OpencodeProject].self, from: data)
-    }
-
     /// Creates a new session in the given directory.
     func createSession(directory: String) async throws -> OpencodeSession {
         var components = URLComponents(
