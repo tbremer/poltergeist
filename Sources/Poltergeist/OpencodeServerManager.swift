@@ -22,6 +22,18 @@ final class OpencodeServerManager: ObservableObject {
     let executablePath: String?
     private let port: UInt16?
     private var process: Process?
+    private var healthCheckTask: Task<Void, Never>?
+
+    /// True once we've deliberately stopped the server (app quitting), so the
+    /// termination handler doesn't try to resurrect it.
+    private var isStopping = false
+    /// Consecutive auto-restarts since the server was last healthy. Used to back
+    /// off and eventually give up on a crash loop; reset on a healthy boot.
+    private var restartAttempts = 0
+    private let maxRestartAttempts = 5
+    /// Identifies the current server process so a late termination handler from a
+    /// superseded process is ignored.
+    private var generation = 0
 
     init() {
         let exe = Self.locateOpencode()
@@ -69,6 +81,16 @@ final class OpencodeServerManager: ObservableObject {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
+        generation += 1
+        let myGeneration = generation
+        // Resurrect the server if it dies unexpectedly: attached terminals embed
+        // this port in their `attach` URL, so a death otherwise breaks every
+        // session with "unable to connect" until the app relaunches. The handler
+        // fires on a background thread, so hop back to the main actor.
+        proc.terminationHandler = { [weak self] _ in
+            Task { @MainActor in self?.handleServerExit(generation: myGeneration) }
+        }
+
         do {
             try proc.run()
             process = proc
@@ -78,14 +100,15 @@ final class OpencodeServerManager: ObservableObject {
         }
 
         let healthURL = baseURL.appendingPathComponent("session")
-        Task { [weak self] in
+        healthCheckTask?.cancel()
+        healthCheckTask = Task { [weak self] in
             for _ in 0 ..< 60 {
                 if Task.isCancelled { return }
                 var req = URLRequest(url: healthURL)
                 req.timeoutInterval = 1
                 if let (_, resp) = try? await URLSession.shared.data(for: req),
                    (resp as? HTTPURLResponse)?.statusCode == 200 {
-                    self?.status = .running
+                    self?.markServerRunning()
                     return
                 }
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -95,8 +118,44 @@ final class OpencodeServerManager: ObservableObject {
     }
 
     func stop() {
+        isStopping = true
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
         process?.terminate()
         process = nil
+    }
+
+    /// Health check passed. Clear the restart counter so a later one-off crash
+    /// restarts promptly instead of counting toward the give-up cap.
+    private func markServerRunning() {
+        status = .running
+        restartAttempts = 0
+    }
+
+    /// Invoked (on the main actor) when the server process exits. Relaunches it on
+    /// the *same* port — keeping `baseURL`/`OPENCODE_BASE_URL` and existing attach
+    /// URLs valid — unless we stopped it deliberately or it's crash-looping.
+    private func handleServerExit(generation gen: Int) {
+        // Ignore deliberate stops and stale handlers from a superseded process.
+        guard !isStopping, gen == generation else { return }
+        process = nil
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
+
+        guard restartAttempts < maxRestartAttempts else {
+            status = .failed("server keeps exiting — gave up after \(maxRestartAttempts) restarts")
+            return
+        }
+        restartAttempts += 1
+        status = .starting
+        // Brief, growing backoff: a one-off crash recovers almost immediately
+        // while a tight crash loop doesn't spin.
+        let delay = min(0.5 * Double(restartAttempts), 5.0)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !self.isStopping, self.process == nil else { return }
+            self.start()
+        }
     }
 
     // MARK: - Helpers
