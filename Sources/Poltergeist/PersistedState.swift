@@ -17,7 +17,9 @@ struct PersistedState: Codable {
     var nextOrdinal: Int
     /// Legacy (pre-tree sidebar): directories the user had expanded. Ignored now.
     var expandedGroups: [String]? = nil
-    /// Paths of project-tree folders the user has collapsed (expanded by default).
+    /// Legacy: previously persisted collapsed folders. Tree expansion is now
+    /// in-memory and resets each launch (only the top-level folder opens), so this
+    /// is no longer read or written.
     var collapsedGroups: [String]? = nil
 }
 

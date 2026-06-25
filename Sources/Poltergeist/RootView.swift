@@ -107,7 +107,7 @@ struct RootView: View {
   // MARK: - Sidebar
 
   private var sidebar: some View {
-    let openCodeExpanded = store.isExpanded(Self.openCodeSectionKey)
+    let openCodeExpanded = store.isExpanded(Self.openCodeSectionKey, defaultExpanded: true)
     return List(selection: $store.selectedID) {
       Section("Sessions") {
         ForEach(store.sessions) { session in
@@ -246,7 +246,9 @@ struct RootView: View {
   private func appendItems(_ nodes: [ProjectTreeNode], depth: Int, into rows: inout [SidebarItem]) {
     for node in nodes {
       let selecting = selectionProject == node.path
-      let expanded = store.isExpanded(node.path) || selecting
+      // Only the top level (depth 0) is expanded by default; deeper folders open
+      // on click. Select mode force-expands its folder regardless.
+      let expanded = store.isExpanded(node.path, defaultExpanded: depth == 0) || selecting
       rows.append(.folder(node, depth: depth, expanded: expanded, selecting: selecting))
       if expanded {
         appendItems(node.children, depth: depth + 1, into: &rows)
@@ -299,7 +301,7 @@ struct RootView: View {
 
   private func folderButton(_ node: ProjectTreeNode, expanded: Bool) -> some View {
     Button {
-      store.setExpanded(node.path, !store.isExpanded(node.path))
+      store.setExpanded(node.path, !expanded)
     } label: {
       HStack(spacing: 4) {
         Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -341,9 +343,10 @@ struct RootView: View {
   }
 
   private func enterSelectMode(_ node: ProjectTreeNode) {
+    // No need to expand here: `appendItems` force-expands the folder being
+    // selected (`|| selecting`).
     selectionProject = node.path
     selectedSessionIDs = []
-    store.setExpanded(node.path, true)
   }
 
   private func exitSelectMode() {

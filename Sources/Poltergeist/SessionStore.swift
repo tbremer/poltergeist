@@ -13,9 +13,11 @@ import GhosttyTerminal
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [TerminalSession] = []
     @Published var selectedID: TerminalSession.ID?
-    /// Paths of project-tree folders the user has collapsed. Folders are expanded
-    /// by default, so this stores only the exceptions (persisted UI state).
-    @Published var collapsedGroups: Set<String> = []
+    /// Per-path expansion overrides for the OpenCode sidebar tree, recorded when
+    /// the user clicks a disclosure triangle. In-memory only (not persisted): each
+    /// launch starts from the depth-aware default in `isExpanded`, so the tree
+    /// always opens with just the top-level folder expanded.
+    @Published private var expansionOverrides: [String: Bool] = [:]
 
     /// Per-tab pane layout. Absent means the tab is a single pane (its own
     /// session). Splits add extra `TerminalSession`s that live only in the tree
@@ -308,12 +310,16 @@ final class SessionStore: ObservableObject {
         focusSurface(of: target)
     }
 
-    /// Project-tree folders are expanded unless explicitly collapsed.
-    func isExpanded(_ path: String) -> Bool { !collapsedGroups.contains(path) }
+    /// Whether a sidebar tree row is expanded. With no user override, the
+    /// `defaultExpanded` value decides — callers pass `depth == 0`, so only the
+    /// top-level folder opens by default; a click records an explicit override for
+    /// this launch via `setExpanded`.
+    func isExpanded(_ path: String, defaultExpanded: Bool) -> Bool {
+        expansionOverrides[path] ?? defaultExpanded
+    }
 
     func setExpanded(_ path: String, _ expanded: Bool) {
-        if expanded { collapsedGroups.remove(path) } else { collapsedGroups.insert(path) }
-        scheduleSave()
+        expansionOverrides[path] = expanded
     }
 
     /// Updates the appearance applied to newly-created sessions (live reload).
@@ -331,7 +337,6 @@ final class SessionStore: ObservableObject {
         }
 
         nextOrdinal = max(state.nextOrdinal, 1)
-        collapsedGroups = Set(state.collapsedGroups ?? [])
         for ps in state.sessions {
             let session = TerminalSession(
                 id: ps.id,
@@ -369,8 +374,7 @@ final class SessionStore: ObservableObject {
                 )
             },
             selectedID: selectedID,
-            nextOrdinal: nextOrdinal,
-            collapsedGroups: Array(collapsedGroups)
+            nextOrdinal: nextOrdinal
         )
     }
 
