@@ -38,7 +38,7 @@ OpenCode trace: `AppModel.init` → `OpencodeServerManager.start` (spawns `openc
 - `Sources/Poltergeist/OpencodeClient.swift` — REST (`/session`, `/project`); `OpencodeEventStream.swift` — SSE; `OpencodeModels.swift` — `OpencodeSession`/`OpencodeProject`/`ProjectTreeNode` + computed props (`isStale`, `isRecentlyActive`, `updatedRelative`, `totalTokens`).
 - `Sources/Poltergeist/SettingsView.swift` — Settings scene (Appearance + Keyboard tabs).
 - `Sources/Poltergeist/{AppConfig,PersistedState,AppPaths,ConfigWatcher}.swift` — config/persistence plumbing.
-- `scripts/package-app.fish` — builds + assembles `dist/Poltergeist.app` with a generated icon.
+- `scripts/package-app.sh` — builds + assembles `dist/Poltergeist.app` with a generated icon.
 
 ## Legacy / dormant (distractors)
 - Scrollback persistence was **removed**; `SessionStore.init` still deletes a leftover `scrollback/` dir. Do not try to persist/replay scrollback (it re-feeds capability queries and garbles output).
@@ -56,7 +56,7 @@ OpenCode trace: `AppModel.init` → `OpencodeServerManager.start` (spawns `openc
 
 ## Build / run / setup
 - Build: `swift build` (debug → `.build/debug/Poltergeist`) or `swift build -c release`.
-- Package the app: `fish scripts/package-app.fish [debug|release]` (default release) → `dist/Poltergeist.app`. Needs `rsvg-convert`, `iconutil`, `swift`; icon derives from `icon/master.svg`.
+- Package the app: `scripts/package-app.sh [debug|release]` (default release) → `dist/Poltergeist.app`. Needs `rsvg-convert`, `iconutil`, `swift`; icon derives from `icon/master.svg`.
 - Smoke test (no UI): launch the binary ~5s, confirm with `kill -0 $PID`, then `pkill -9 -f 'debug/Poltergeist'` and `pkill -9 -f 'opencode/bin/opencode serve'` (kill the spawned server too).
 - Runtime needs the `opencode` binary on PATH / `~/.opencode/bin` / homebrew; absent, opencode features degrade gracefully but terminals still work.
 - Config: `~/Library/Application Support/Poltergeist/config.json` (theme/font/inactive-pane dimming). Session metadata: `sessions.json` (same dir). `dist/`, `.build/`, `.vscode/` are gitignored.
@@ -79,5 +79,5 @@ OpenCode trace: `AppModel.init` → `OpencodeServerManager.start` (spawns `openc
 ## Working agreement for agents
 - Default to the live path; read the file before assuming, and match its indentation (4-space; 2-space in `RootView.swift`).
 - Don't reintroduce `.terminalFocused`, recursive pane-tree views, scrollback persistence, or first-responder-based shortcut gating — each caused a fixed bug.
-- After changes: `swift build` and run the smoke test; repackage with `scripts/package-app.fish` when verifying the bundled app.
+- After changes: `swift build` and run the smoke test; repackage with `scripts/package-app.sh` when verifying the bundled app.
 - Don't introduce new architecture (DI frameworks, extra windows, global hotkeys for local actions) unprompted.

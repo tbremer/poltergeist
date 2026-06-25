@@ -1,52 +1,52 @@
-#!/usr/bin/env fish
+#!/usr/bin/env bash
 # Package Poltergeist into a macOS .app bundle with a generated icon.
 #
-#   scripts/package-app.fish [debug|release]   (default: release)
+#   scripts/package-app.sh [debug|release]   (default: release)
 #
 # The icon is composed from icon/master.svg: the line art is centered on a
-# white rounded-rect ("squircle") tile following Apple's icon grid, rendered
+# dark rounded-rect ("squircle") tile following Apple's icon grid, rendered
 # crisply at every required size with rsvg-convert, then assembled via iconutil.
 # libghostty is statically linked, so the built binary is self-contained.
 
-set -l repo (cd (dirname (status filename))/..; and pwd)
+set -euo pipefail
 
-set -l config release
-if set -q argv[1]
-    set config $argv[1]
-end
-if test "$config" != debug -a "$config" != release
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+config="${1:-release}"
+if [[ "$config" != debug && "$config" != release ]]; then
     echo "error: config must be 'debug' or 'release' (got '$config')" >&2
     exit 1
-end
+fi
 
-set -l master "$repo/icon/master.svg"
-set -l dist "$repo/dist"
-set -l composed "$dist/AppIcon.svg"
-set -l iconset "$dist/Poltergeist.iconset"
-set -l icns "$dist/Poltergeist.icns"
-set -l app "$dist/Poltergeist.app"
-set -l app_version "0.1.0"
+master="$repo/icon/master.svg"
+dist="$repo/dist"
+composed="$dist/AppIcon.svg"
+iconset="$dist/Poltergeist.iconset"
+icns="$dist/Poltergeist.icns"
+app="$dist/Poltergeist.app"
+# Bundle version; CI sets POLTERGEIST_VERSION from the release tag.
+app_version="${POLTERGEIST_VERSION:-0.1.0}"
 
-for tool in rsvg-convert iconutil swift
-    if not command -q $tool
+for tool in rsvg-convert iconutil swift; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
         echo "error: required tool '$tool' not found in PATH" >&2
         exit 1
-    end
-end
-if not test -f $master
+    fi
+done
+if [[ ! -f "$master" ]]; then
     echo "error: icon source not found at $master" >&2
     exit 1
-end
+fi
 
-rm -rf $dist
-mkdir -p $iconset
+rm -rf "$dist"
+mkdir -p "$iconset"
 
-# --- compose: white squircle tile + soft shadow + scaled line art ---------
+# --- compose: dark squircle tile + soft shadow + scaled line art ----------
 # Pull the inner nodes out of master.svg (drop its <svg> open + </svg> close),
 # then drop them into a group scaled to ~62% and centered. fill="none" on the
 # group preserves the envelope's stroke-only look; paths that set fill="black"
 # explicitly still fill.
-set -l inner (sed '1d;$d' $master | string collect)
+inner="$(sed '1d;$d' "$master")"
 
 printf '%s\n' \
 '<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">' \
@@ -66,43 +66,41 @@ printf '%s\n' \
 '  <g fill="none" filter="url(#artWhite)" transform="translate(512,512) scale(0.62) translate(-512.5,-512)">' \
 "$inner" \
 '  </g>' \
-'</svg>' >$composed
+'</svg>' >"$composed"
 
 # --- render every iconset size straight from the SVG (sharp at all sizes) --
 for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x \
         128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 512:icon_256x256@2x \
-        512:icon_512x512 1024:icon_512x512@2x
-    set -l parts (string split ':' $spec)
-    rsvg-convert -w $parts[1] -h $parts[1] "$composed" -o "$iconset/$parts[2].png"
-    or begin
-        echo "error: rsvg-convert failed for $parts[2]" >&2
+        512:icon_512x512 1024:icon_512x512@2x; do
+    size="${spec%%:*}"
+    name="${spec##*:}"
+    if ! rsvg-convert -w "$size" -h "$size" "$composed" -o "$iconset/$name.png"; then
+        echo "error: rsvg-convert failed for $name" >&2
         exit 1
-    end
-end
+    fi
+done
 
-iconutil -c icns "$iconset" -o "$icns"
-or begin
+if ! iconutil -c icns "$iconset" -o "$icns"; then
     echo "error: iconutil failed" >&2
     exit 1
-end
+fi
 
 # --- build the executable --------------------------------------------------
-swift build -c $config --package-path $repo
-or begin
+if ! swift build -c "$config" --package-path "$repo"; then
     echo "error: swift build failed" >&2
     exit 1
-end
-set -l bin "$repo/.build/$config/Poltergeist"
-if not test -f $bin
+fi
+bin="$repo/.build/$config/Poltergeist"
+if [[ ! -f "$bin" ]]; then
     echo "error: build did not produce $bin" >&2
     exit 1
-end
+fi
 
 # --- assemble the .app bundle ---------------------------------------------
-set -l contents "$app/Contents"
+contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources"
-cp $bin "$contents/MacOS/Poltergeist"
-cp $icns "$contents/Resources/Poltergeist.icns"
+cp "$bin" "$contents/MacOS/Poltergeist"
+cp "$icns" "$contents/Resources/Poltergeist.icns"
 printf 'APPL????' >"$contents/PkgInfo"
 
 printf '%s\n' \

@@ -1,0 +1,55 @@
+name: Release
+
+# Build and publish a downloadable .app whenever a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required for `gh release create`
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use latest Xcode 16 (Swift 6)
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n1 || true)"
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          swift --version
+
+      - name: Install librsvg (icon generation)
+        run: brew install librsvg
+
+      - name: Package .app
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          export POLTERGEIST_VERSION="${TAG#v}" # v0.1.0 -> 0.1.0 in the bundle
+          scripts/package-app.sh release
+
+      - name: Zip bundle
+        run: ditto -c -k --keepParent dist/Poltergeist.app "Poltergeist-${{ github.ref_name }}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          Unsigned, un-notarized macOS app — requires macOS 14 (Sonoma) or later.
+
+          **First launch is blocked by Gatekeeper.** To open:
+          - Right-click (Control-click) `Poltergeist.app` -> **Open** -> **Open**, or
+          - Run: `xattr -dr com.apple.quarantine Poltergeist.app`
+
+          The OpenCode sidebar requires the `opencode` CLI on your `PATH`.
+          EOF
+          gh release create "$TAG" "Poltergeist-${TAG}.zip" \
+            --title "Poltergeist $TAG" \
+            --notes-file notes.md \
+            --verify-tag
