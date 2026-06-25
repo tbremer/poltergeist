@@ -130,6 +130,9 @@ struct RootView: View {
       // OpenCode section: a collapsible header + the project tree. When
       // collapsed it's pinned to the bottom of the sidebar (safeAreaInset).
       if openCodeExpanded {
+        Divider()
+          .listRowInsets(EdgeInsets())
+          .listRowSeparator(.hidden)
         openCodeHeaderButton(expanded: true)
         if model.projectTree.isEmpty {
           Text(model.server.statusText)
