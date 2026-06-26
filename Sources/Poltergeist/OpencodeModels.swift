@@ -81,6 +81,15 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
     }
 }
 
+/// A subset of the opencode server's Project object (GET /project). opencode
+/// scopes session listing to a single project, so we enumerate projects and
+/// fetch each `worktree`'s sessions to gather everything (not just the server's
+/// current project).
+struct OpencodeProject: Codable, Identifiable, Hashable {
+    let id: String
+    var worktree: String?
+}
+
 /// A node in the sidebar's project file-tree. A node may be a pure folder, a
 /// project directory holding sessions, or both (a project with sub-projects).
 struct ProjectTreeNode: Identifiable, Hashable {

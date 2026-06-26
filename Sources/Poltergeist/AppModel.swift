@@ -521,11 +521,39 @@ final class AppModel: ObservableObject {
     private func refresh() async {
         lastRefreshAt = Date()  // mark the poll time for the timer's cadence gate
         guard let client else { return }
-        guard let sessions = try? await client.listSessions(directory: nil) else { return }
-        var byID: [String: OpencodeSession] = [:]
-        for session in sessions where session.parentID == nil {
-            byID[session.id] = session
+
+        // opencode scopes GET /session to one project (the server's cwd), so the
+        // unscoped call misses sessions in every other git project. Enumerate
+        // projects and fetch each worktree's sessions (plus the unscoped/global
+        // scope), then union by id. Fetches run concurrently; we keep the existing
+        // cache if nothing responded, so a transient failure never blanks the
+        // sidebar.
+        let projects = (try? await client.listProjects()) ?? []
+        var seenWorktrees = Set<String>()
+        var scopes: [String?] = [nil]  // nil = the server's current/"global" project
+        for project in projects {
+            guard let worktree = project.worktree, worktree != "/",
+                  seenWorktrees.insert(worktree).inserted
+            else { continue }
+            scopes.append(worktree)
         }
+
+        var byID: [String: OpencodeSession] = [:]
+        var anyResponded = false
+        await withTaskGroup(of: [OpencodeSession]?.self) { group in
+            for scope in scopes {
+                group.addTask { try? await client.listSessions(directory: scope) }
+            }
+            for await sessions in group {
+                guard let sessions else { continue }
+                anyResponded = true
+                for session in sessions where session.parentID == nil {
+                    byID[session.id] = session
+                }
+            }
+        }
+
+        guard anyResponded else { return }
         opencodeByID = byID
         rebuildTree()
         saveOpencodeCache()

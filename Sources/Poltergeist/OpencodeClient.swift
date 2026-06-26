@@ -6,9 +6,11 @@ struct OpencodeClient: Sendable {
 
     /// Lists sessions, optionally scoped to a project directory.
     ///
-    /// The server caps results at 100 by default and ignores offset/cursor
-    /// params, so we request a high explicit `limit` to avoid silently
-    /// truncating busy projects.
+    /// opencode scopes this to a single project: with no `directory` it returns
+    /// only the server's current/"global" project, so sessions in other git
+    /// projects are invisible. Callers enumerate `listProjects()` and pass each
+    /// worktree to gather everything. The server also caps results (~100 by
+    /// default) and ignores offset/cursor, so we request a high explicit `limit`.
     func listSessions(directory: String?, limit: Int = 1000) async throws -> [OpencodeSession] {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("session"),
@@ -29,6 +31,20 @@ struct OpencodeClient: Sendable {
             throw URLError(.badServerResponse)
         }
         return try JSONDecoder().decode([OpencodeSession].self, from: data)
+    }
+
+    /// Lists all known projects (GET /project). Used to enumerate the per-project
+    /// scopes that `listSessions` must be called with to see every session.
+    func listProjects() async throws -> [OpencodeProject] {
+        let url = baseURL.appendingPathComponent("project")
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode([OpencodeProject].self, from: data)
     }
 
     /// Creates a new session in the given directory.
