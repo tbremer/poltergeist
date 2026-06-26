@@ -310,6 +310,16 @@ final class SessionStore: ObservableObject {
         focusSurface(of: target)
     }
 
+    /// Sends text to the pane that currently holds keyboard focus in the selected
+    /// tab (the same target splits act on). Routed through the surface so
+    /// libghostty frames it as a bracketed paste when the running program (e.g.
+    /// opencode) enabled bracketed-paste mode.
+    @discardableResult
+    func sendToFocusedPane(_ text: String) -> Bool {
+        guard let tab = selectedSession else { return false }
+        return focusedLeaf(in: tab).state.send(text)
+    }
+
     /// Whether a sidebar tree row is expanded. With no user override, the
     /// `defaultExpanded` value decides — callers pass `depth == 0`, so only the
     /// top-level folder opens by default; a click records an explicit override for

@@ -316,6 +316,13 @@ final class AppModel: ObservableObject {
         case 12 where !shift:  // ⌘Q — quit
             if fresh { NSApp.terminate(nil) }
             return true
+        case 9 where !shift:  // ⌘V — paste a clipboard file reference as its path (Ghostty parity)
+            // Only claim ⌘V when the clipboard holds file URLs (e.g. a CleanShot
+            // screenshot, copied as a file with no plain-text string). Plain-text
+            // ⌘V returns false and falls through to libghostty's own paste.
+            guard let paste = Self.clipboardFilePaste() else { return false }
+            if fresh { store.sendToFocusedPane(paste) }
+            return true
         default:
             return false
         }
@@ -325,6 +332,34 @@ final class AppModel: ObservableObject {
     private func matches(_ event: NSEvent, _ name: KeyboardShortcuts.Name) -> Bool {
         guard let shortcut = KeyboardShortcuts.getShortcut(for: name) else { return false }
         return KeyboardShortcuts.Shortcut(event: event) == shortcut
+    }
+
+    /// Ghostty-parity ⌘V: when the pasteboard holds file references — CleanShot X
+    /// and similar utilities copy a screenshot as a `public.file-url` with no
+    /// plain-text string, which libghostty's `.string`-only paste drops — return
+    /// their shell-escaped paths joined by spaces. Returns nil when there are no
+    /// file URLs, so ordinary text ⌘V falls through to libghostty's paste (keeping
+    /// bracketed paste + paste protection). Mirrors Ghostty's
+    /// `NSPasteboard.getOpinionatedStringContents()`. opencode turns the pasted
+    /// path into an image attachment; a shell just receives the path.
+    private static func clipboardFilePaste() -> String? {
+        let pasteboard = NSPasteboard.general
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] else { return nil }
+        let files = urls.filter { $0.isFileURL }
+        guard !files.isEmpty else { return nil }
+        return files.map { shellEscape($0.path) }.joined(separator: " ")
+    }
+
+    /// Backslash-escapes shell-sensitive characters so a path can be inserted into
+    /// a live terminal buffer. Mirrors Ghostty's `Shell.escape`; opencode reverses
+    /// it (`\X` → `X`) when turning a pasted path into an attachment. Backslash is
+    /// escaped first (it leads the set) so we don't double-escape what we add.
+    private static func shellEscape(_ string: String) -> String {
+        var result = string
+        for character in "\\ ()[]{}<>\"'`!#$&;|*?\t" {
+            result = result.replacingOccurrences(of: String(character), with: "\\\(character)")
+        }
+        return result
     }
 
     // MARK: - Live config reload
