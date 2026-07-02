@@ -12,14 +12,16 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15
+    # macos-26 ships Xcode 26 (Swift 6.2+). A dependency (KeyboardShortcuts 3.0.1)
+    # requires Swift tools 6.2, which macos-15 (Swift 6.1) can't load.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use latest Xcode 16 (Swift 6)
+      - name: Select Xcode (Swift 6.2+)
         run: |
-          XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n1 || true)"
-          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          # Use the image's default Xcode (26.x stable on macos-26).
+          sudo xcode-select -s /Applications/Xcode.app
           swift --version
 
       - name: Install librsvg (icon generation)
