@@ -4,6 +4,13 @@ import Foundation
 /// `~/Library/Application Support/Poltergeist/`.
 enum AppPaths {
     static var supportDirectory: URL {
+        // Dev/testing: run an isolated instance whose config, sessions, and cache
+        // don't touch the installed app's state.
+        if let override = ProcessInfo.processInfo.environment["POLTERGEIST_SUPPORT_DIR"], !override.isEmpty {
+            let dir = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser

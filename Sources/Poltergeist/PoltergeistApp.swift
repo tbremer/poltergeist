@@ -39,6 +39,7 @@ struct PoltergeistApp: App {
                 Divider()
                 Button("Next Session") { model.store.selectNext() }
                 Button("Previous Session") { model.store.selectPrevious() }
+                Button("Switch Session…") { model.requestSessionSwitcher() }
             }
         }
 

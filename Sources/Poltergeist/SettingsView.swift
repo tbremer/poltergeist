@@ -228,6 +228,8 @@ private struct ShortcutSettings: View {
                 KeyboardShortcuts.Recorder("New OpenCode Session", name: .newOpencodeSession)
                 KeyboardShortcuts.Recorder("Next Session", name: .nextSession)
                 KeyboardShortcuts.Recorder("Previous Session", name: .previousSession)
+                FixedShortcutRow("Select Session 1–9", "⌘1–⌘9")
+                FixedShortcutRow("Select Last Session", "⌘0")
             }
 
             Section("Panes") {
@@ -240,6 +242,7 @@ private struct ShortcutSettings: View {
 
             Section("Window & App") {
                 KeyboardShortcuts.Recorder("Toggle Sidebar", name: .toggleSidebar)
+                KeyboardShortcuts.Recorder("Session Switcher", name: .sessionSwitcher)
                 KeyboardShortcuts.Recorder("Show / Hide Poltergeist", name: .togglePoltergeist)
                 FixedShortcutRow("Close Window", "⇧⌘W")
                 FixedShortcutRow("Settings", "⌘,")

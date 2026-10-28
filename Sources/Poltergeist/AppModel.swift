@@ -29,6 +29,7 @@ extension KeyboardShortcuts.Name {
     static let focusNextPane = Self("focusNextPane", initial: .init(.rightBracket, modifiers: [.command]))
     static let focusPreviousPane = Self("focusPreviousPane", initial: .init(.leftBracket, modifiers: [.command]))
     static let toggleSidebar = Self("toggleSidebar", initial: .init(.b, modifiers: [.command, .option]))
+    static let sessionSwitcher = Self("sessionSwitcher", initial: .init(.b, modifiers: [.command, .option, .shift]))
 }
 
 /// Top-level app state: owns the opencode server, the terminal session store,
@@ -77,7 +78,13 @@ final class AppModel: ObservableObject {
     /// and invokes the SwiftUI `openSettings` environment action.
     @Published private(set) var openSettingsNonce = 0
 
-    private let client: OpencodeClient?
+    /// Bumped to request the session switcher menu (hotkey/menu); RootView
+    /// observes it and opens the switcher, showing it even if the sidebar is open.
+    @Published private(set) var sessionSwitcherNonce = 0
+
+    /// REST client for the current server connection (nil until connected). The
+    /// connection can change if the shared service restarts on a new port.
+    private var client: OpencodeClient? { server.connection.map(OpencodeClient.init) }
     private var eventStream: OpencodeEventStream?
     private var cancellables = Set<AnyCancellable>()
 
@@ -89,7 +96,7 @@ final class AppModel: ObservableObject {
 
     /// Suppress refreshes until this time. Set briefly when a terminal spawns so
     /// the new shell's startup capability queries get the main thread — otherwise
-    /// our fan-out delays GhosttyKit's replies and they leak to the prompt.
+    /// our refresh delays GhosttyKit's replies and they leak to the prompt.
     private var refreshQuietUntil = Date.distantPast
     private var knownSessionCount = 0
 
@@ -117,17 +124,12 @@ final class AppModel: ObservableObject {
         darkThemeDef = defs.dark
         let activeDef = isDark ? defs.dark : defs.light
 
-        // Point every terminal at the (soon-to-be-ready) shared server.
-        var overrides: [String: String] = [:]
-        if let base = server.baseURL {
-            overrides["OPENCODE_BASE_URL"] = base.absoluteString
-        }
+        // No opencode env is injected into ordinary shells: with opencode v2 a
+        // plain `opencode` already uses the same shared background service.
         store = SessionStore(
-            environmentOverrides: overrides,
             config: appConfig,
             terminalTheme: Self.terminalTheme(for: activeDef)
         )
-        client = server.baseURL.map { OpencodeClient(baseURL: $0) }
         knownSessionCount = store.sessions.count
 
         // Show last launch's sessions instantly; the background refresh reconciles
@@ -136,14 +138,14 @@ final class AppModel: ObservableObject {
         hydrateOpencodeCache()
         refreshQuietUntil = Date().addingTimeInterval(2.0)
 
-        server.start()
+        // (Re)subscribe to server events whenever the connection is established
+        // or changes (e.g. the shared service restarted on a new port/password).
+        server.$connection
+            .removeDuplicates()
+            .sink { [weak self] connection in self?.connectEventStream(connection) }
+            .store(in: &cancellables)
 
-        if let base = server.baseURL {
-            let stream = OpencodeEventStream(baseURL: base)
-            stream.onEvent = { [weak self] in self?.scheduleRefresh() }
-            stream.start()
-            eventStream = stream
-        }
+        server.start()
 
         store.$selectedID
             .sink { [weak self] _ in self?.scheduleRefresh() }
@@ -210,6 +212,17 @@ final class AppModel: ObservableObject {
         }
 
         installShortcutMonitor()
+        installSidebarClickMonitor()
+    }
+
+    private func connectEventStream(_ connection: OpencodeConnection?) {
+        eventStream?.stop()
+        eventStream = nil
+        guard let connection else { return }
+        let stream = OpencodeEventStream(connection: connection)
+        stream.onEvent = { [weak self] in self?.scheduleRefresh() }
+        stream.start()
+        eventStream = stream
     }
 
     // MARK: - Global hotkey
@@ -242,6 +255,9 @@ final class AppModel: ObservableObject {
     /// Requests opening the Settings window (see `openSettingsNonce`).
     func requestOpenSettings() { openSettingsNonce &+= 1 }
 
+    /// Requests opening the session switcher (see `sessionSwitcherNonce`).
+    func requestSessionSwitcher() { sessionSwitcherNonce &+= 1 }
+
     /// True when a content window is on screen (false when closed, hidden, or
     /// minimized) — used to slow the background poll.
     private static func hasVisibleWindow() -> Bool {
@@ -264,9 +280,59 @@ final class AppModel: ObservableObject {
     /// key monitor runs *earlier* in event dispatch, so we claim the app's
     /// terminal-context shortcuts here and let every other keystroke fall through
     /// to the terminal untouched.
+    private var sidebarClickMonitor: Any?
+
+    /// Clicking the sidebar List makes it first responder, so typing afterwards
+    /// goes nowhere. On a click inside the List, wait for the button release and,
+    /// if the List kept focus, hand it back to the selected terminal.
+    ///
+    /// A tap gesture on the rows can't do this reliably: the List's underlying
+    /// NSOutlineView runs its own mouse-tracking loop on mouse-down and swallows
+    /// the mouse-up about half the time (it never reaches gestures or event
+    /// monitors). So we poll the physical button state instead.
+    private func installSidebarClickMonitor() {
+        sidebarClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, let window = event.window, Self.windowHostsTerminal(window),
+                      let content = window.contentView
+                else { return }
+                let point = content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+                guard let hit = content.hitTest(point), Self.isInsideTable(hit) else { return }
+                self.returnFocusAfterSidebarClick(in: window)
+            }
+            return event
+        }
+    }
+
+    private func returnFocusAfterSidebarClick(in window: NSWindow, attempt: Int = 0) {
+        if NSEvent.pressedMouseButtons & 1 != 0 {
+            guard attempt < 600 else { return }  // give up after ~18s of holding
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.returnFocusAfterSidebarClick(in: window, attempt: attempt + 1)
+            }
+            return
+        }
+        // Released. Let the List finish its own click handling first.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, let responder = window.firstResponder as? NSView,
+                  Self.isInsideTable(responder)
+            else { return }
+            self.store.focusSelectedSession()
+        }
+    }
+
+    /// True if `view` is (inside) an NSTableView — i.e. the sidebar List.
+    private static func isInsideTable(_ view: NSView) -> Bool {
+        sequence(first: view, next: { $0.superview }).contains { $0 is NSTableView }
+    }
+
     private func installShortcutMonitor() {
         shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            MainActor.assumeIsolated {
+                FocusDebug.log("keyDown code=\(event.keyCode) mods=\(event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue) → \(FocusDebug.describeCurrent()) (selected \(FocusDebug.selectedLabel()))")
+            }
             let handled = MainActor.assumeIsolated { self.handleTerminalShortcut(event) }
             return handled ? nil : event
         }
@@ -301,11 +367,25 @@ final class AppModel: ObservableObject {
         if matches(event, .focusNextPane) { if fresh { store.focusNextPane() }; return true }
         if matches(event, .focusPreviousPane) { if fresh { store.focusPreviousPane() }; return true }
         if matches(event, .toggleSidebar) { if fresh { toggleSidebar() }; return true }
+        if matches(event, .sessionSwitcher) { if fresh { requestSessionSwitcher() }; return true }
 
         // Fixed shortcuts (not configurable). Key codes (ANSI): W=13, comma=43, Q=12.
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         guard mods.contains(.command), mods.isDisjoint(with: [.option, .control]) else { return false }
         let shift = mods.contains(.shift)
+
+        // ⌘1…⌘9 select the Nth session tab; ⌘0 selects the last. Matched on the
+        // produced digit character (US/ANSI number row) rather than a keycode
+        // table — simpler, and it covers the numeric keypad too. Placed after the
+        // configurable shortcuts so a user binding on ⌘-digit still wins, and we
+        // consume every ⌘-digit (even out-of-range) so it never beeps or leaks to
+        // the terminal.
+        if !shift, let characters = event.charactersIgnoringModifiers,
+           characters.count == 1, let number = Int(characters) {
+            if fresh { store.selectSession(number: number) }
+            return true
+        }
+
         switch event.keyCode {
         case 13:  // ⌘W close pane / ⌘⇧W close window
             if fresh { if shift { NSApp.keyWindow?.close() } else { store.closeFocusedPane() } }
@@ -514,7 +594,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Refresh implementation
 
-    /// Loads every top-level session in one request and groups them by directory
+    /// Loads every top-level session and groups them by directory
     /// in `rebuildTree`. Bails without touching the cache when the server is
     /// unreachable, so a transient failure never blanks the sidebar. Persists the
     /// result so the next launch can show it instantly.
@@ -522,39 +602,17 @@ final class AppModel: ObservableObject {
         lastRefreshAt = Date()  // mark the poll time for the timer's cadence gate
         guard let client else { return }
 
-        // opencode scopes GET /session to one project (the server's cwd), so the
-        // unscoped call misses sessions in every other git project. Enumerate
-        // projects and fetch each worktree's sessions (plus the unscoped/global
-        // scope), then union by id. Fetches run concurrently; we keep the existing
-        // cache if nothing responded, so a transient failure never blanks the
-        // sidebar.
-        let projects = (try? await client.listProjects()) ?? []
-        var seenWorktrees = Set<String>()
-        var scopes: [String?] = [nil]  // nil = the server's current/"global" project
-        for project in projects {
-            guard let worktree = project.worktree, worktree != "/",
-                  seenWorktrees.insert(worktree).inserted
-            else { continue }
-            scopes.append(worktree)
+        // v2 lists sessions globally (every project), paginated. On failure keep
+        // the existing cache so a transient error never blanks the sidebar, and
+        // re-check the connection in case the shared service moved.
+        let sessions: [OpencodeSession]
+        do {
+            sessions = try await client.listRootSessions()
+        } catch {
+            server.revalidate()
+            return
         }
-
-        var byID: [String: OpencodeSession] = [:]
-        var anyResponded = false
-        await withTaskGroup(of: [OpencodeSession]?.self) { group in
-            for scope in scopes {
-                group.addTask { try? await client.listSessions(directory: scope) }
-            }
-            for await sessions in group {
-                guard let sessions else { continue }
-                anyResponded = true
-                for session in sessions where session.parentID == nil {
-                    byID[session.id] = session
-                }
-            }
-        }
-
-        guard anyResponded else { return }
-        opencodeByID = byID
+        opencodeByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         rebuildTree()
         saveOpencodeCache()
     }
@@ -658,21 +716,31 @@ final class AppModel: ObservableObject {
 
     // MARK: - Actions
 
-    /// Opens an opencode server session in a new terminal attached to our server.
+    /// Opens an opencode session in a new terminal attached to the server.
     /// If a terminal is already attached to this session, selects it instead.
     func openOpencodeSession(_ session: OpencodeSession) {
         if let existing = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
-            store.selectedID = existing.id
+            store.selectAndFocus(existing.id)
             return
         }
-        guard let baseURL = server.baseURL, let exe = server.executablePath else { return }
-        var args = [exe, "attach", baseURL.absoluteString, "--session", session.id]
-        if let dir = session.directory { args += ["--dir", dir] }
+        guard let connection = server.connection, let exe = server.executablePath else { return }
+        // opencode v2 dropped the `attach` subcommand. On the shared background
+        // service a plain `opencode --session` connects to it on its own (no
+        // credentials needed in the terminal); a private server needs `--server`
+        // plus its password, passed only to this terminal's environment.
+        var args = [exe, "--session", session.id]
+        var environment: [String: String] = [:]
+        if !connection.isShared {
+            args += ["--server", connection.baseURL.absoluteString]
+            if let password = connection.password { environment["OPENCODE_PASSWORD"] = password }
+        }
+        if let dir = session.directory { args.append(dir) }
         store.newSession(
             command: args,
             workingDirectory: session.directory.map { URL(fileURLWithPath: $0) },
             customTitle: session.title,
-            opencodeSessionID: session.id
+            opencodeSessionID: session.id,
+            environment: environment
         )
     }
 
@@ -708,7 +776,7 @@ final class AppModel: ObservableObject {
             if let attached = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
                 store.closeSession(attached.id)
             }
-            try? await client.deleteSession(id: session.id, directory: session.directory)
+            try? await client.deleteSession(id: session.id)
             opencodeByID[session.id] = nil
         }
         rebuildTree()
@@ -719,7 +787,7 @@ final class AppModel: ObservableObject {
     /// local update so the sidebar reflects it immediately.
     func renameOpencodeSession(_ session: OpencodeSession, to title: String) async {
         guard let client else { return }
-        try? await client.updateSessionTitle(id: session.id, title: title, directory: session.directory)
+        try? await client.updateSessionTitle(id: session.id, title: title)
 
         if var existing = opencodeByID[session.id] {
             existing.title = title

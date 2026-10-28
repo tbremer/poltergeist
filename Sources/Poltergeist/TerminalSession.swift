@@ -25,6 +25,11 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// The opencode server session this terminal is attached to, if any.
     let opencodeSessionID: String?
 
+    /// Whether opencode is the foreground process in this tab (any of its panes).
+    /// Drives the sidebar sparkle; polled by `SessionStore`. Starts true for
+    /// attached sessions so the icon doesn't flicker before the first poll.
+    @Published private(set) var opencodeActive: Bool
+
     private let pty: PTYProcess
     private let ioSession: InMemoryTerminalSession
     private var cancellables = Set<AnyCancellable>()
@@ -54,7 +59,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         for (key, value) in environmentOverrides { environment[key] = value }
         let cwd = (workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser).path
 
-        // Either run a custom command (e.g. `opencode attach …`) or the login shell.
+        // Either run a custom command (e.g. `opencode --server … --session …`) or the login shell.
         let executable: String
         let argv: [String]
         if let command, let first = command.first {
@@ -116,6 +121,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.customTitle = customTitle
         self.launchDirectory = cwd
         self.opencodeSessionID = opencodeSessionID
+        self.opencodeActive = opencodeSessionID != nil
         self.pty = pty
         self.ioSession = io
         self.state = state
@@ -142,6 +148,17 @@ final class TerminalSession: ObservableObject, Identifiable {
 
     func terminate() {
         pty.terminate()
+    }
+
+    /// Whether this terminal's foreground job is opencode; `nil` if unknown
+    /// (PTY not started yet, or exited).
+    func foregroundIsOpencode() -> Bool? {
+        pty.foregroundProcessNames()?.contains { $0 == "opencode" || $0.hasPrefix("opencode-") }
+    }
+
+    /// Publishes only on change, so polling doesn't churn the sidebar.
+    func setOpencodeActive(_ active: Bool) {
+        if opencodeActive != active { opencodeActive = active }
     }
 
     /// Live-applies appearance (font + theme) to the running surface.

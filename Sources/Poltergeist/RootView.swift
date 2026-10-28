@@ -28,6 +28,11 @@ struct RootView: View {
   @State private var selectedSessionIDs: Set<String> = []
   @State private var confirmingDeleteSelection = false
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
+  @State private var sidebarCollapsed = false
+  /// The switcher hotkey shows the switcher even while the sidebar is open;
+  /// `switcherForced` keeps its toolbar item mounted until the menu closes.
+  @State private var switcherForced = false
+  @State private var switcherOpenRequested = false
 
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -37,17 +42,32 @@ struct RootView: View {
       TerminalDetailView(store: store, dimming: paneDimming)
         .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
         .navigationSubtitle(subtitle)
-      // Collapsed: New Terminal rides next to the relocated native
-      // sidebar toggle by the traffic lights (Notes-style).
-      // .toolbar {
-      //   if columnVisibility == .detailOnly {
-      //     ToolbarItem(placement: .navigation) { newTerminalButton }
-      //   }
-      // }
+        // Collapsed: a session switcher rides next to the relocated native
+        // sidebar toggle by the traffic lights. Hover it for a quick menu of
+        // active sessions (columnVisibility can't be trusted here — the ⌥⌘B
+        // toggle bypasses it — so collapse is read from the real split view).
+        // The switcher hotkey also shows it temporarily with the sidebar open.
+        .toolbar {
+          if (sidebarCollapsed || switcherForced) && !store.sessions.isEmpty {
+            ToolbarItem(placement: .navigation) {
+              SessionSwitcherButton(
+                store: store,
+                keyboardOpenRequested: $switcherOpenRequested,
+                onClose: { switcherForced = false }
+              )
+            }
+          }
+        }
     }
     .preferredColorScheme(model.appearanceScheme)
     .background(WindowChromeConfigurator(backgroundColor: themeBackground))
+    .background(SidebarCollapseObserver(collapsed: $sidebarCollapsed))
     .onChange(of: model.openSettingsNonce) { _, _ in openSettings() }
+    .onChange(of: model.sessionSwitcherNonce) { _, _ in
+      guard !store.sessions.isEmpty else { return }
+      switcherForced = true
+      switcherOpenRequested = true
+    }
     .alert("Rename Session", isPresented: renamingBinding) {
       TextField("Name", text: $renameText)
       Button("Cancel", role: .cancel) { renamingID = nil }
@@ -195,7 +215,7 @@ struct RootView: View {
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(.secondary)
           .frame(width: 10)
-        Text("OpenCode")
+        Text("OpenCode Sessions")
         Spacer(minLength: 4)
         Text("\(model.opencodeSessions.count)").foregroundStyle(.secondary)
       }
@@ -533,7 +553,7 @@ private struct SessionRow: View {
   let onClose: () -> Void
   @State private var hovering = false
 
-  private var isOpencode: Bool { session.opencodeSessionID != nil }
+  private var isOpencode: Bool { session.opencodeActive }
 
   var body: some View {
     HStack(spacing: 6) {

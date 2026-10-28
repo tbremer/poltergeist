@@ -1,6 +1,6 @@
 import Foundation
 
-/// A subset of the opencode server's Session object (GET /session).
+/// A subset of the opencode v2 server's Session object (GET /api/session).
 struct OpencodeSession: Codable, Identifiable, Hashable {
     let id: String
     var title: String?
@@ -34,6 +34,32 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
     struct Time: Codable, Hashable {
         var created: Double?
         var updated: Double?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, directory, parentID, cost, tokens, agent, model, version, time
+    }
+
+    /// v2 nests the directory as `location.directory`.
+    private enum V2Keys: String, CodingKey { case location }
+    private struct Location: Decodable { var directory: String? }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        parentID = try c.decodeIfPresent(String.self, forKey: .parentID)
+        cost = try c.decodeIfPresent(Double.self, forKey: .cost)
+        tokens = try c.decodeIfPresent(Tokens.self, forKey: .tokens)
+        agent = try c.decodeIfPresent(String.self, forKey: .agent)
+        model = try c.decodeIfPresent(Model.self, forKey: .model)
+        version = try c.decodeIfPresent(String.self, forKey: .version)
+        time = try c.decodeIfPresent(Time.self, forKey: .time)
+        // Flat `directory` is what our on-disk cache (and v1) stores; v2 API
+        // responses carry it under `location`.
+        let v2 = try decoder.container(keyedBy: V2Keys.self)
+        directory = try c.decodeIfPresent(String.self, forKey: .directory)
+            ?? v2.decodeIfPresent(Location.self, forKey: .location)?.directory
     }
 
     var totalTokens: Int {
@@ -79,15 +105,6 @@ struct OpencodeSession: Codable, Identifiable, Hashable {
         let date = Date(timeIntervalSince1970: updated / 1000)
         return "Last updated \(date.formatted(date: .abbreviated, time: .shortened))"
     }
-}
-
-/// A subset of the opencode server's Project object (GET /project). opencode
-/// scopes session listing to a single project, so we enumerate projects and
-/// fetch each `worktree`'s sessions to gather everything (not just the server's
-/// current project).
-struct OpencodeProject: Codable, Identifiable, Hashable {
-    let id: String
-    var worktree: String?
 }
 
 /// A node in the sidebar's project file-tree. A node may be a pure folder, a

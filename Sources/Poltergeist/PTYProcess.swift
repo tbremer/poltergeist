@@ -90,6 +90,30 @@ final class PTYProcess: @unchecked Sendable {
         finishExit(code: 129)
     }
 
+    /// Names (`p_comm`, ≤16 chars) of the processes in the PTY's foreground
+    /// process group — the shell itself, or whatever job it's running in the
+    /// foreground. `nil` if the child hasn't started or has exited.
+    func foregroundProcessNames() -> [String]? {
+        let fd = currentFD()
+        guard fd >= 0 else { return nil }
+        let pgid = tcgetpgrp(fd)
+        guard pgid > 0 else { return nil }
+
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PGRP, pgid]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        // Headroom in case the group grows between the two calls.
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride + 4)
+        size = procs.count * MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, UInt32(mib.count), &procs, &size, nil, 0) == 0 else { return nil }
+        let count = size / MemoryLayout<kinfo_proc>.stride
+        return procs.prefix(count).map { proc in
+            withUnsafeBytes(of: proc.kp_proc.p_comm) { raw in
+                String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            }
+        }
+    }
+
     // MARK: - Private
 
     private func currentFD() -> Int32 {

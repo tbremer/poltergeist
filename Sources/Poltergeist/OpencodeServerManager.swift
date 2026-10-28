@@ -1,11 +1,27 @@
 import Foundation
 import Darwin
 
-/// Spawns and supervises a single `opencode serve` instance for the app.
+/// Where the opencode server lives and how to authenticate (HTTP Basic, the
+/// username is always `opencode` in v2).
+struct OpencodeConnection: Equatable, Sendable {
+    let baseURL: URL
+    let password: String?
+    /// True when this is opencode's shared background service (the same one the
+    /// plain `opencode` CLI uses); false when we spawned a private `serve`.
+    let isShared: Bool
+}
+
+/// Finds (or provides) the opencode v2 server the app talks to.
 ///
-/// We pick a free TCP port up front so `baseURL` (and thus `OPENCODE_BASE_URL`)
-/// is known immediately — even before the server finishes booting — so every
-/// spawned terminal can be told where the server is.
+/// Preference order:
+/// 1. **The shared background service** opencode registers in
+///    `~/.local/state/opencode/service.json` — one server for the app, plain
+///    `opencode` runs in any terminal, and attached sessions alike.
+/// 2. If it isn't running, `opencode service start`, then re-discover.
+/// 3. As a last resort, spawn a private `opencode serve` on a free localhost
+///    port with a generated password (auto-restarted if it dies).
+///
+/// We never stop the shared service; only a private server is torn down on quit.
 @MainActor
 final class OpencodeServerManager: ObservableObject {
     enum Status: Equatable {
@@ -16,50 +32,39 @@ final class OpencodeServerManager: ObservableObject {
     }
 
     @Published private(set) var status: Status = .starting
-
-    let baseURL: URL?
+    /// The live connection, nil until a healthy server is found.
+    @Published private(set) var connection: OpencodeConnection?
 
     let executablePath: String?
-    private let port: UInt16?
-    private var process: Process?
-    private var healthCheckTask: Task<Void, Never>?
 
-    /// True once we've deliberately stopped the server (app quitting), so the
-    /// termination handler doesn't try to resurrect it.
+    // Private (fallback) server state.
+    private var process: Process?
+    private var ownedPort: UInt16?
+    private var ownedPassword: String?
     private var isStopping = false
-    /// Consecutive auto-restarts since the server was last healthy. Used to back
-    /// off and eventually give up on a crash loop; reset on a healthy boot.
+    /// Consecutive auto-restarts since the private server was last healthy.
     private var restartAttempts = 0
     private let maxRestartAttempts = 5
-    /// Identifies the current server process so a late termination handler from a
-    /// superseded process is ignored.
+    /// Identifies the current private process so a late termination handler from
+    /// a superseded process is ignored.
     private var generation = 0
+
+    private var connectTask: Task<Void, Never>?
+    private var lastRevalidate = Date.distantPast
 
     init() {
         let exe = Self.locateOpencode()
         executablePath = exe
-
-        guard exe != nil else {
-            port = nil
-            baseURL = nil
+        if exe == nil {
             status = .unavailable("opencode binary not found")
-            return
-        }
-        if let p = Self.findFreeTCPPort() {
-            port = p
-            baseURL = URL(string: "http://127.0.0.1:\(p)")
-        } else {
-            port = nil
-            baseURL = nil
-            status = .unavailable("no free port available")
         }
     }
 
     var statusText: String {
         switch status {
         case let .unavailable(msg): "opencode unavailable — \(msg)"
-        case .starting: "starting opencode server…"
-        case .running: "no opencode sessions for this directory"
+        case .starting: "connecting to opencode…"
+        case .running: "no opencode sessions yet"
         case let .failed(msg): "opencode server error — \(msg)"
         }
     }
@@ -70,25 +75,134 @@ final class OpencodeServerManager: ObservableObject {
     }
 
     func start() {
-        guard let executablePath, let port, let baseURL, process == nil else { return }
+        guard executablePath != nil, connectTask == nil, !isStopping else { return }
+        status = .starting
+        connectTask = Task { [weak self] in
+            await self?.connect()
+            self?.connectTask = nil
+        }
+    }
+
+    /// Re-checks the connection after a request failed (e.g. the shared service
+    /// restarted on a new port/password). Throttled; a no-op while connecting.
+    func revalidate() {
+        guard executablePath != nil, connectTask == nil, !isStopping,
+              Date().timeIntervalSince(lastRevalidate) > 10 else { return }
+        lastRevalidate = Date()
+        connectTask = Task { [weak self] in
+            guard let self else { return }
+            if let current = self.connection, await Self.isHealthy(current) {
+                self.connectTask = nil
+                return
+            }
+            // A private server has its own restart path; only re-discover shared.
+            if self.connection?.isShared == false, self.process != nil {
+                self.connectTask = nil
+                return
+            }
+            self.status = .starting
+            await self.connect()
+            self.connectTask = nil
+        }
+    }
+
+    func stop() {
+        isStopping = true
+        connectTask?.cancel()
+        connectTask = nil
+        process?.terminate()  // private server only; the shared service lives on
+        process = nil
+    }
+
+    // MARK: - Connecting
+
+    private func connect() async {
+        if let shared = await discoverShared() {
+            setConnected(shared)
+            return
+        }
+        if await startSharedService(), let shared = await waitForShared(timeout: 15) {
+            setConnected(shared)
+            return
+        }
+        startOwnedServer()
+    }
+
+    private func setConnected(_ connection: OpencodeConnection) {
+        if self.connection != connection { self.connection = connection }
+        status = .running
+        restartAttempts = 0
+    }
+
+    /// Reads the shared service registration and confirms it's healthy.
+    private func discoverShared() async -> OpencodeConnection? {
+        guard let data = try? Data(contentsOf: Self.serviceStateFile),
+              let info = try? JSONDecoder().decode(ServiceState.self, from: data),
+              let url = URL(string: info.url)
+        else { return nil }
+        let candidate = OpencodeConnection(baseURL: url, password: info.password, isShared: true)
+        return await Self.isHealthy(candidate) ? candidate : nil
+    }
+
+    private func waitForShared(timeout: TimeInterval) async -> OpencodeConnection? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !Task.isCancelled {
+            if let shared = await discoverShared() { return shared }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        return nil
+    }
+
+    /// Runs `opencode service start` off the main thread. True if it exited 0.
+    private func startSharedService() async -> Bool {
+        guard let executablePath else { return false }
+        return await Task.detached {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: executablePath)
+            proc.arguments = ["service", "start"]
+            proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                return proc.terminationStatus == 0
+            } catch {
+                return false
+            }
+        }.value
+    }
+
+    // MARK: - Private server (fallback)
+
+    private func startOwnedServer() {
+        guard let executablePath, process == nil, !isStopping else { return }
+        if ownedPort == nil { ownedPort = Self.findFreeTCPPort() }
+        if ownedPassword == nil { ownedPassword = UUID().uuidString + UUID().uuidString }
+        guard let port = ownedPort, let password = ownedPassword,
+              let baseURL = URL(string: "http://127.0.0.1:\(port)")
+        else {
+            status = .unavailable("no free port available")
+            return
+        }
         status = .starting
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executablePath)
         proc.arguments = ["serve", "--hostname", "127.0.0.1", "--port", "\(port)"]
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        proc.environment = ProcessInfo.processInfo.environment
+        var environment = ProcessInfo.processInfo.environment
+        environment["OPENCODE_PASSWORD"] = password
+        proc.environment = environment
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
         generation += 1
         let myGeneration = generation
-        // Resurrect the server if it dies unexpectedly: attached terminals embed
-        // this port in their `attach` URL, so a death otherwise breaks every
-        // session with "unable to connect" until the app relaunches. The handler
-        // fires on a background thread, so hop back to the main actor.
+        // Resurrect the private server if it dies unexpectedly, on the *same*
+        // port + password so attached terminals' `--server` URLs stay valid.
         proc.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.handleServerExit(generation: myGeneration) }
+            Task { @MainActor in self?.handleOwnedExit(generation: myGeneration) }
         }
 
         do {
@@ -99,16 +213,12 @@ final class OpencodeServerManager: ObservableObject {
             return
         }
 
-        let healthURL = baseURL.appendingPathComponent("session")
-        healthCheckTask?.cancel()
-        healthCheckTask = Task { [weak self] in
+        let candidate = OpencodeConnection(baseURL: baseURL, password: password, isShared: false)
+        Task { [weak self] in
             for _ in 0 ..< 60 {
                 if Task.isCancelled { return }
-                var req = URLRequest(url: healthURL)
-                req.timeoutInterval = 1
-                if let (_, resp) = try? await URLSession.shared.data(for: req),
-                   (resp as? HTTPURLResponse)?.statusCode == 200 {
-                    self?.markServerRunning()
+                if await Self.isHealthy(candidate) {
+                    self?.setConnected(candidate)
                     return
                 }
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -117,48 +227,44 @@ final class OpencodeServerManager: ObservableObject {
         }
     }
 
-    func stop() {
-        isStopping = true
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-        process?.terminate()
-        process = nil
-    }
-
-    /// Health check passed. Clear the restart counter so a later one-off crash
-    /// restarts promptly instead of counting toward the give-up cap.
-    private func markServerRunning() {
-        status = .running
-        restartAttempts = 0
-    }
-
-    /// Invoked (on the main actor) when the server process exits. Relaunches it on
-    /// the *same* port — keeping `baseURL`/`OPENCODE_BASE_URL` and existing attach
-    /// URLs valid — unless we stopped it deliberately or it's crash-looping.
-    private func handleServerExit(generation gen: Int) {
-        // Ignore deliberate stops and stale handlers from a superseded process.
+    private func handleOwnedExit(generation gen: Int) {
         guard !isStopping, gen == generation else { return }
         process = nil
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-
         guard restartAttempts < maxRestartAttempts else {
             status = .failed("server keeps exiting — gave up after \(maxRestartAttempts) restarts")
             return
         }
         restartAttempts += 1
         status = .starting
-        // Brief, growing backoff: a one-off crash recovers almost immediately
-        // while a tight crash loop doesn't spin.
         let delay = min(0.5 * Double(restartAttempts), 5.0)
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !self.isStopping, self.process == nil else { return }
-            self.start()
+            self.startOwnedServer()
         }
     }
 
     // MARK: - Helpers
+
+    private struct ServiceState: Decodable {
+        let url: String
+        let password: String?
+    }
+
+    private static var serviceStateFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/opencode/service.json")
+    }
+
+    /// Healthy = an authenticated `GET /api/info` answers 200. (The v2 server
+    /// serves its web UI for unknown paths with a 200, so a bare path probe
+    /// would pass even against the wrong thing.)
+    nonisolated static func isHealthy(_ connection: OpencodeConnection) async -> Bool {
+        var request = OpencodeClient(connection: connection).request("api/info")
+        request.timeoutInterval = 2
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
 
     private static func locateOpencode() -> String? {
         let fm = FileManager.default

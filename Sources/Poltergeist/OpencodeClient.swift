@@ -1,115 +1,99 @@
 import Foundation
 
-/// Minimal REST client for the opencode server.
+/// Minimal REST client for the opencode v2 server API (`/api/...`, HTTP Basic
+/// auth with username `opencode`). Responses wrap payloads in `{ "data": … }`.
 struct OpencodeClient: Sendable {
-    let baseURL: URL
+    let connection: OpencodeConnection
 
-    /// Lists sessions, optionally scoped to a project directory.
-    ///
-    /// opencode scopes this to a single project: with no `directory` it returns
-    /// only the server's current/"global" project, so sessions in other git
-    /// projects are invisible. Callers enumerate `listProjects()` and pass each
-    /// worktree to gather everything. The server also caps results (~100 by
-    /// default) and ignores offset/cursor, so we request a high explicit `limit`.
-    func listSessions(directory: String?, limit: Int = 1000) async throws -> [OpencodeSession] {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("session"),
-            resolvingAgainstBaseURL: false
-        )
-        var items = [URLQueryItem(name: "limit", value: String(limit))]
-        if let directory {
-            items.append(URLQueryItem(name: "directory", value: directory))
+    /// Lists every top-level (root), non-archived session across all projects.
+    /// The listing is global (every project), so one paginated query covers
+    /// everything. Follows `cursor.next` until a page comes back empty.
+    func listRootSessions(pageSize: Int = 100, maxPages: Int = 100) async throws -> [OpencodeSession] {
+        var sessions: [OpencodeSession] = []
+        var seen = Set<String>()
+        var cursor: String?
+        for _ in 0 ..< maxPages {
+            var query = [
+                URLQueryItem(name: "parentID", value: "null"),
+                URLQueryItem(name: "archived", value: "false"),
+                URLQueryItem(name: "limit", value: String(pageSize)),
+            ]
+            if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            let page: SessionsPage = try await send(request("api/session", query: query))
+            let fresh = page.data.filter { seen.insert($0.id).inserted }
+            sessions += fresh
+            guard !fresh.isEmpty, let next = page.cursor.next else { break }
+            cursor = next
         }
-        components?.queryItems = items
-        guard let url = components?.url else { throw URLError(.badURL) }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder().decode([OpencodeSession].self, from: data)
+        return sessions
     }
 
-    /// Lists all known projects (GET /project). Used to enumerate the per-project
-    /// scopes that `listSessions` must be called with to see every session.
-    func listProjects() async throws -> [OpencodeProject] {
-        let url = baseURL.appendingPathComponent("project")
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder().decode([OpencodeProject].self, from: data)
-    }
-
-    /// Creates a new session in the given directory.
+    /// Creates a new session located in `directory`.
     func createSession(directory: String) async throws -> OpencodeSession {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("session"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [URLQueryItem(name: "directory", value: directory)]
-        guard let url = components?.url else { throw URLError(.badURL) }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("{}".utf8)
-        request.timeoutInterval = 10
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder().decode(OpencodeSession.self, from: data)
+        var req = request("api/session", method: "POST")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["location": ["directory": directory]])
+        req.timeoutInterval = 10
+        let envelope: Envelope<OpencodeSession> = try await send(req)
+        return envelope.data
     }
 
     /// Permanently deletes a session.
-    func deleteSession(id: String, directory: String?) async throws {
+    func deleteSession(id: String) async throws {
+        var req = request("api/session/\(id)", method: "DELETE")
+        req.timeoutInterval = 10
+        try await sendIgnoringBody(req)
+    }
+
+    /// Renames a session (PATCH /api/session/:id with { title }).
+    func updateSessionTitle(id: String, title: String) async throws {
+        var req = request("api/session/\(id)", method: "PATCH")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["title": title])
+        req.timeoutInterval = 10
+        try await sendIgnoringBody(req)
+    }
+
+    // MARK: - Plumbing
+
+    /// An authenticated request for `path` (relative to the server root).
+    func request(_ path: String, method: String = "GET", query: [URLQueryItem] = []) -> URLRequest {
         var components = URLComponents(
-            url: baseURL.appendingPathComponent("session").appendingPathComponent(id),
+            url: connection.baseURL.appendingPathComponent(path),
             resolvingAgainstBaseURL: false
         )
-        if let directory {
-            components?.queryItems = [URLQueryItem(name: "directory", value: directory)]
+        if !query.isEmpty { components?.queryItems = query }
+        var req = URLRequest(url: components?.url ?? connection.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.timeoutInterval = 5
+        if method != "GET" { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if let password = connection.password {
+            let token = Data("opencode:\(password)".utf8).base64EncodedString()
+            req.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
         }
-        guard let url = components?.url else { throw URLError(.badURL) }
+        return req
+    }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.timeoutInterval = 10
+    private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try Self.check(response)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
 
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+    private func sendIgnoringBody(_ req: URLRequest) async throws {
+        let (_, response) = try await URLSession.shared.data(for: req)
+        try Self.check(response)
+    }
+
+    private static func check(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
     }
 
-    /// Renames a session (PATCH /session/:id with { title }).
-    func updateSessionTitle(id: String, title: String, directory: String?) async throws {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("session").appendingPathComponent(id),
-            resolvingAgainstBaseURL: false
-        )
-        if let directory {
-            components?.queryItems = [URLQueryItem(name: "directory", value: directory)]
-        }
-        guard let url = components?.url else { throw URLError(.badURL) }
+    private struct Envelope<T: Decodable>: Decodable { let data: T }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "PATCH"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["title": title])
-        request.timeoutInterval = 10
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
+    private struct SessionsPage: Decodable {
+        let data: [OpencodeSession]
+        let cursor: Cursor
+        struct Cursor: Decodable { let next: String? }
     }
 }

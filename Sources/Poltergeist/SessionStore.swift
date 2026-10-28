@@ -30,6 +30,7 @@ final class SessionStore: ObservableObject {
     private var terminalTheme: TerminalTheme?
     private var cancellables = Set<AnyCancellable>()
     private var saveWork: DispatchWorkItem?
+    private var foregroundTimer: Timer?
 
     init(
         environmentOverrides: [String: String] = [:],
@@ -51,6 +52,19 @@ final class SessionStore: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in self?.scheduleSave() }
             .store(in: &cancellables)
+        $selectedID
+            .dropFirst()
+            .sink { [weak self] id in
+                let label = self?.sessions.first { $0.id == id }.map { FocusDebug.label(for: $0.state) } ?? "nil"
+                FocusDebug.log("selectedID → \(label)")
+            }
+            .store(in: &cancellables)
+        FocusDebug.install(store: self)
+
+        // Track which tabs are running opencode in the foreground (sidebar sparkle).
+        foregroundTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshForegroundProcesses() }
+        }
 
         // Persist metadata on quit.
         NotificationCenter.default.addObserver(
@@ -73,13 +87,14 @@ final class SessionStore: ObservableObject {
         command: [String]? = nil,
         workingDirectory: URL? = nil,
         customTitle: String? = nil,
-        opencodeSessionID: String? = nil
+        opencodeSessionID: String? = nil,
+        environment: [String: String] = [:]
     ) -> TerminalSession {
         let session = TerminalSession(
             ordinal: nextOrdinal,
             customTitle: customTitle,
             workingDirectory: workingDirectory,
-            environmentOverrides: environmentOverrides,
+            environmentOverrides: environmentOverrides.merging(environment) { _, new in new },
             command: command,
             opencodeSessionID: opencodeSessionID,
             fontFamily: config.fontFamily,
@@ -91,20 +106,29 @@ final class SessionStore: ObservableObject {
     }
 
     @discardableResult
+    /// `environment` adds variables for this terminal only (on top of the
+    /// store-wide overrides) — e.g. the opencode server password, which must not
+    /// leak into ordinary shells.
     func newSession(
         command: [String]? = nil,
         workingDirectory: URL? = nil,
         customTitle: String? = nil,
-        opencodeSessionID: String? = nil
+        opencodeSessionID: String? = nil,
+        environment: [String: String] = [:]
     ) -> TerminalSession {
         let session = makeSession(
             command: command,
             workingDirectory: workingDirectory,
             customTitle: customTitle,
-            opencodeSessionID: opencodeSessionID
+            opencodeSessionID: opencodeSessionID,
+            environment: environment
         )
         sessions.append(session)
         selectedID = session.id
+        // Move keyboard focus into the freshly-created terminal so the user can
+        // type immediately. The surface mounts a run-loop tick later, so
+        // focusSurface retries until it's in the view tree.
+        focusSurface(of: session)
         scheduleSave()
         return session
     }
@@ -148,6 +172,55 @@ final class SessionStore: ObservableObject {
             return
         }
         selectedID = sessions[(idx - 1 + sessions.count) % sessions.count].id
+    }
+
+    /// Selects the tab `id` and moves keyboard focus into its active pane, so the
+    /// user can type straight away. Focus is deferred a run-loop turn: when this
+    /// runs from a sidebar click, the List finishes its own mouse handling (and
+    /// first-responder grab) first, and we take focus back after it.
+    func selectAndFocus(_ id: TerminalSession.ID) {
+        guard let tab = sessions.first(where: { $0.id == id }) else { return }
+        FocusDebug.log("selectAndFocus(\(FocusDebug.label(for: tab.state)))")
+        if selectedID != id { selectedID = id }
+        DispatchQueue.main.async { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.focusSurface(of: self.focusedLeaf(in: tab))
+        }
+    }
+
+    /// Moves keyboard focus into the selected tab's active pane (no selection change).
+    func focusSelectedSession() {
+        guard let tab = selectedSession else { return }
+        focusSurface(of: focusedLeaf(in: tab))
+    }
+
+    /// Selects the Nth session tab in the sidebar "Sessions" list (1-based) and
+    /// moves keyboard focus into its terminal. `number == 0` selects the last tab
+    /// (⌘0). Numbers past the current count (e.g. ⌘7 with three tabs) are ignored,
+    /// matching the tab-switching behaviour of browsers and other terminals.
+    func selectSession(number: Int) {
+        guard !sessions.isEmpty else { return }
+        let target: TerminalSession?
+        if number == 0 {
+            target = sessions.last
+        } else {
+            target = sessions.indices.contains(number - 1) ? sessions[number - 1] : nil
+        }
+        guard let target else { return }
+        selectedID = target.id
+        focusSurface(of: focusedLeaf(in: target))
+    }
+
+    /// Updates each tab's `opencodeActive` from its panes' foreground jobs. A
+    /// tab whose panes are all unknown (not yet started) keeps its current value.
+    /// Writes go to the per-session flag (changes only), never to store-level
+    /// `@Published` state, so polling can't disturb terminal focus.
+    private func refreshForegroundProcesses() {
+        for tab in sessions {
+            let states = tree(for: tab).leaves.compactMap { $0.foregroundIsOpencode() }
+            guard !states.isEmpty else { continue }
+            tab.setOpencodeActive(states.contains(true))
+        }
     }
 
     // MARK: - Panes (splits)
@@ -212,9 +285,11 @@ final class SessionStore: ObservableObject {
         if let window = NSApp.keyWindow ?? NSApp.mainWindow,
            let content = window.contentView,
            let view = Self.terminalView(for: session.state, in: content) {
-            window.makeFirstResponder(view)
+            let ok = window.makeFirstResponder(view)
+            FocusDebug.log("focusSurface(\(FocusDebug.label(for: session.state))) attempt \(attempt): makeFirstResponder=\(ok) keyWindowIsTarget=\(window === NSApp.keyWindow)")
             return
         }
+        FocusDebug.log("focusSurface(\(FocusDebug.label(for: session.state))) attempt \(attempt): view not found (keyWindow=\(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil"))")
         guard attempt < 10 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self, weak session] in
             guard let self, let session else { return }
