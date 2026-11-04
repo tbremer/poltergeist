@@ -145,6 +145,7 @@ struct RootView: View {
             }
           }
         }
+        .onMove { store.moveSessions(from: $0, to: $1) }
       }
 
       // OpenCode section: a collapsible header + the project tree. When

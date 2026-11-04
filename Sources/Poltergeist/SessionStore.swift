@@ -133,6 +133,13 @@ final class SessionStore: ObservableObject {
         return session
     }
 
+    /// Reorders sidebar tabs (drag and drop). ⌘-number shortcuts follow the new
+    /// order, and it's persisted.
+    func moveSessions(from source: IndexSet, to destination: Int) {
+        sessions.move(fromOffsets: source, toOffset: destination)
+        scheduleSave()
+    }
+
     func closeSession(_ id: TerminalSession.ID) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         let session = sessions.remove(at: index)
