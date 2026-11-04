@@ -29,6 +29,8 @@ struct RootView: View {
   @State private var confirmingDeleteSelection = false
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var sidebarCollapsed = false
+  /// Last docked sidebar width, so the floating (collapsed-hover) copy matches.
+  @State private var sidebarWidth: CGFloat = 260
   /// The switcher hotkey shows the switcher even while the sidebar is open;
   /// `switcherForced` keeps its toolbar item mounted until the menu closes.
   @State private var switcherForced = false
@@ -40,6 +42,16 @@ struct RootView: View {
         .modifier(ThemedSidebarBackground(color: themeBackground))
     } detail: {
       TerminalDetailView(store: store, dimming: paneDimming)
+        // Collapsed: hovering the leading edge floats the sidebar over the
+        // terminals (no layout change).
+        .overlay(alignment: .leading) {
+          FloatingSidebar(enabled: sidebarCollapsed, background: themeBackground, width: sidebarWidth) {
+            // No ThemedSidebarBackground here: FloatingSidebar paints its own
+            // (elevated) background, which this would cover.
+            sidebarList
+              .listStyle(.sidebar)
+          }
+        }
         .navigationTitle(store.selectedSession?.displayName ?? "Poltergeist")
         .navigationSubtitle(subtitle)
         // Collapsed: a session switcher rides next to the relocated native
@@ -127,6 +139,27 @@ struct RootView: View {
   // MARK: - Sidebar
 
   private var sidebar: some View {
+    sidebarList
+      .navigationTitle("Poltergeist")
+      .frame(minWidth: 220)
+      .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+        // Ignore the collapse animation and sub-point jitter.
+        if width >= 220, abs(width - sidebarWidth) > 0.5 { sidebarWidth = width }
+      }
+      // Keep the system sidebar toggle (it sits at the sidebar's trailing edge
+      // with the default styling and relocates by the traffic lights when
+      // collapsed). New Terminal joins it there with default placement.
+      .toolbar {
+        ToolbarItem {
+          newTerminalButton
+        }
+      }
+  }
+
+  /// The sidebar's contents, shared by the real sidebar column and the
+  /// floating (collapsed-hover) copy. No toolbar/title here, so the floating
+  /// copy doesn't duplicate toolbar items.
+  private var sidebarList: some View {
     let openCodeExpanded = store.isExpanded(Self.openCodeSectionKey, defaultExpanded: true)
     return List(selection: $store.selectedID) {
       Section("Sessions") {
@@ -173,22 +206,6 @@ struct RootView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-      }
-    }
-    .navigationTitle("Poltergeist")
-    .frame(minWidth: 220)
-    // Keep the system sidebar toggle (it sits at the sidebar's trailing edge
-    // with the default styling and relocates by the traffic lights when
-    // collapsed). New Terminal joins it there with default placement.
-    .toolbar {
-      ToolbarItem {
-        newTerminalButton
-        // Button {
-        //   store.newSession()
-        // } label: {
-        //   Image(systemName: "square.and.arrow.down.badge.checkmark.fill")
-        // }
-        // .help("New Terminal (⌘T)")
       }
     }
   }
