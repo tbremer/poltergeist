@@ -17,6 +17,8 @@ Poltergeist is a single-window macOS terminal emulator built on [Ghostty](https:
 - OpenCode integration (OpenCode v2): uses OpenCode's shared background service (starting it if needed), lists sessions by project in a sidebar, and lets you open, create, rename, and delete sessions.
 - OpenCode-aware tabs: a tab shows a ✨ sparkle while `opencode` is the foreground program in any of its panes — whether you opened it from the sidebar or ran `opencode` by hand — and goes back to a terminal icon when it exits.
 - Fast session switching: ⌘1–⌘9 jump to a tab (⌘0 = last), and a session switcher (⇧⌥⌘B, or hover the stack icon by the traffic lights when the sidebar is collapsed) works by mouse or keyboard.
+- With the sidebar collapsed, hover the window's left edge to float the sidebar over your terminals — fully interactive, without resizing anything.
+- Drag sessions in the sidebar to reorder them (⌘-numbers follow the new order, and it's remembered).
 - Selecting a session — by click, shortcut, or switcher — puts keyboard focus straight into its terminal.
 - Configurable keyboard shortcuts plus a global show/hide hotkey.
 - Stays running when its window is closed; click the Dock icon or use the hotkey to bring it back.
