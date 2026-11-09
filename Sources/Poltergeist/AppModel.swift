@@ -86,6 +86,12 @@ final class AppModel: ObservableObject {
     /// connection can change if the shared service restarts on a new port.
     private var client: OpencodeClient? { server.connection.map(OpencodeClient.init) }
     private var eventStream: OpencodeEventStream?
+
+    /// Which opencode sessions are waiting on the user (permission, question,
+    /// or finished turn). Drives row badges, the Dock badge, and notifications.
+    let attention = OpencodeAttentionTracker()
+    private let notifier = AttentionNotifier()
+    private var attentionTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
     private var refreshWork: DispatchWorkItem?
@@ -213,16 +219,135 @@ final class AppModel: ObservableObject {
 
         installShortcutMonitor()
         installSidebarClickMonitor()
+        configureAttention()
+    }
+
+    // MARK: - Attention (sessions waiting on the user)
+
+    /// Tab ID → why the opencode running in it is waiting on the user, from the
+    /// TUI's own OSC 7501 reports. Mirrored here (not on the store) so badge
+    /// updates re-render the sidebar but never the terminal surfaces.
+    @Published private(set) var tabAttention: [TerminalSession.ID: OpencodeAttention] = [:]
+
+    private func configureAttention() {
+        // Server-side tracking now only badges the OpenCode Sessions tree (it
+        // covers sessions that aren't open in a tab).
+        attention.knownRoots = { [weak self] in Set(self?.opencodeByID.keys ?? [:].keys) }
+        attention.isWatching = { [weak self] root in self?.watchedRoot() == root }
+        attention.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // Tabs: the precise signal (works for `opencode` started by hand too).
+        store.onTabAttentionRaised = { [weak self] tab, pane, state in
+            self?.tabAttentionRaised(tab: tab, pane: pane, state: state)
+        }
+        store.onTabAttentionChanged = { [weak self] in self?.syncTabAttention() }
+        notifier.onOpen = { [weak self] target in self?.openFromNotification(target) }
+
+        // Looking at a tab clears its "finished" flag.
+        store.$selectedID
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.markWatchedSessionSeen() } }
+            .store(in: &cancellables)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.markWatchedSessionSeen() }
+        }
+
+        // While anything is running, check often so a finished turn shows up
+        // promptly in the tree (the regular refresh also polls).
+        attentionTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.attention.hasActiveRoots else { return }
+                Task { await self.attention.pollActive() }
+            }
+        }
+    }
+
+    /// The tab the user is looking at: the selected one, while the app is
+    /// frontmost with a window on screen.
+    private var watchedTab: TerminalSession? {
+        guard NSApp.isActive, Self.hasVisibleWindow() else { return nil }
+        return store.selectedSession
+    }
+
+    /// The opencode session the user is looking at (selected tab's attached session).
+    private func watchedRoot() -> String? {
+        watchedTab.flatMap { $0.opencodeSessionID ?? $0.reportedOpencodeSessionID }
+    }
+
+    private func markWatchedSessionSeen() {
+        guard let tab = watchedTab else { return }
+        store.markTabSeen(tab)
+        if let root = tab.opencodeSessionID ?? tab.reportedOpencodeSessionID {
+            attention.clearFinished(root)
+        }
+    }
+
+    private func tabAttentionRaised(tab: TerminalSession, pane: TerminalSession, state: OpencodeAttention) {
+        if watchedTab === tab {
+            // Already looking at it: a finished turn needs no flag; a blocked
+            // prompt is right in front of them, so no notification either.
+            if state == .finished { store.markTabSeen(tab) }
+            return
+        }
+        if state != .finished, !NSApp.isActive {
+            NSApp.requestUserAttention(.informationalRequest)  // bounce the Dock icon once
+        }
+        let title = pane.attentionTitle ?? tab.displayName
+        let body: String
+        switch state {
+        case .permission: body = pane.attentionMessage ?? "Needs permission"
+        case .question: body = pane.attentionMessage ?? "Has a question"
+        case .finished: body = "Finished — waiting for your next prompt"
+        }
+        notifier.post(target: tab.id.uuidString, title: title, body: body)
+    }
+
+    private func syncTabAttention() {
+        var next: [TerminalSession.ID: OpencodeAttention] = [:]
+        for tab in store.sessions {
+            if let state = tab.tabAttention { next[tab.id] = state }
+        }
+        for id in tabAttention.keys where next[id] == nil {
+            notifier.withdraw(target: id.uuidString)
+        }
+        if next != tabAttention { tabAttention = next }
+        NSApp.dockTile.badgeLabel = next.isEmpty ? nil : String(next.count)
+    }
+
+    /// A notification was clicked: bring the window forward and show its tab
+    /// (or, for a server-side session ID, open that session).
+    private func openFromNotification(_ target: String) {
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.canBecomeKey }) {
+            window.makeKeyAndOrderFront(nil)
+        }
+        if let id = UUID(uuidString: target), store.sessions.contains(where: { $0.id == id }) {
+            store.selectAndFocus(id)
+        } else if let session = opencodeByID[target] {
+            openOpencodeSession(session)
+        }
     }
 
     private func connectEventStream(_ connection: OpencodeConnection?) {
         eventStream?.stop()
         eventStream = nil
+        attention.reset(client: connection.map(OpencodeClient.init))
         guard let connection else { return }
         let stream = OpencodeEventStream(connection: connection)
         stream.onEvent = { [weak self] in self?.scheduleRefresh() }
+        stream.onAttention = { [weak self] event in
+            Task { await self?.attention.handle(event) }
+        }
         stream.start()
         eventStream = stream
+        Task { [weak self] in
+            await self?.attention.syncPending()
+            await self?.attention.pollActive()
+        }
     }
 
     // MARK: - Global hotkey
@@ -346,6 +471,9 @@ final class AppModel: ObservableObject {
     /// Window (which, being the last window, quits the whole app). Settings and
     /// other windows host no terminal, so they keep default behaviour.
     private func handleTerminalShortcut(_ event: NSEvent) -> Bool {
+        // A close-tab confirmation is up: it owns the keyboard (even plain keys).
+        if closePromptPane != nil, handleCloseTabPrompt(event) { return true }
+
         // Every shortcut carries ⌘/⌥/⌃, so plain typing skips all of this work
         // (no window search, no shortcut lookups).
         guard !event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
@@ -368,6 +496,8 @@ final class AppModel: ObservableObject {
         if matches(event, .focusPreviousPane) { if fresh { store.focusPreviousPane() }; return true }
         if matches(event, .toggleSidebar) { if fresh { toggleSidebar() }; return true }
         if matches(event, .sessionSwitcher) { if fresh { requestSessionSwitcher() }; return true }
+
+        if handleOpencodeTabShortcut(event) { return true }
 
         // Fixed shortcuts (not configurable). Key codes (ANSI): W=13, comma=43, Q=12.
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
@@ -406,6 +536,90 @@ final class AppModel: ObservableObject {
         default:
             return false
         }
+    }
+
+    /// opencode's own tabs (within one TUI), only while the focused pane runs
+    /// opencode — elsewhere ⌥ keeps typing its usual characters:
+    /// - ⌥1…⌥9, ⌥0 → ⌃1…⌃0 (opencode `session.tab.select.N`, ⌥0 = tab 10)
+    /// - ⌥Tab / ⌥⇧Tab → ⌃Tab / ⌃⇧Tab (`session.tab.next` / `.previous`)
+    /// - ⌥N → ⌃X N (`session.new`)
+    /// - ⌥W → ⌃X W (`session.tab.close`), confirming first if that tab's
+    ///   session is still working or waiting on a prompt
+    /// Replayed through the surface as opencode's default keys (⌃-digit only
+    /// reaches it via the kitty keyboard protocol, which it enables). Matched
+    /// by key code (US/ANSI: Tab=48, W=13, N=45), so ⌥N's dead key never starts.
+    private func handleOpencodeTabShortcut(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let isTab = event.keyCode == 48
+        let isDigit = !isTab && mods == .option
+            && event.charactersIgnoringModifiers.map { $0.count == 1 && Int($0) != nil } == true
+        let isLetter = mods == .option && (event.keyCode == 13 || event.keyCode == 45)
+        guard isDigit || isLetter || (isTab && (mods == .option || mods == [.option, .shift])),
+              let pane = store.focusedPane, pane.foregroundIsOpencode() == true
+        else { return false }
+        // One action per press; holding ⌥Tab keeps cycling.
+        guard isTab || !event.isARepeat else { return true }
+
+        if isLetter {
+            if event.keyCode == 45 {
+                store.pressKeys([.opencodeLeader, .letter("n", keyCode: 45)], in: pane, like: event)
+            } else if let busy = pane.busyCurrentTabTitle() {
+                closePromptPane = pane
+                pane.showCloseTabPrompt(busy)
+            } else {
+                closeOpencodeTab(in: pane, like: event)
+            }
+            return true
+        }
+
+        let characters = isTab ? "\t" : event.charactersIgnoringModifiers ?? ""
+        let key = SyntheticKey(
+            keyCode: event.keyCode,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            modifiers: mods.subtracting(.option).union(.control)
+        )
+        store.pressKeys([key], in: pane, like: event)
+        return true
+    }
+
+    /// The pane showing a close-tab confirmation, if any.
+    private weak var closePromptPane: TerminalSession?
+
+    private func closeOpencodeTab(in pane: TerminalSession, like event: NSEvent) {
+        store.pressKeys([.opencodeLeader, .letter("w", keyCode: 13)], in: pane, like: event)
+    }
+
+    /// Keys while the close-tab confirmation is up (only when its pane has
+    /// focus): Y / Return / ⌥W close, N / Esc cancel; other plain keys are
+    /// swallowed so they don't reach opencode. ⌘ shortcuts pass through.
+    private func handleCloseTabPrompt(_ event: NSEvent) -> Bool {
+        guard let pane = closePromptPane, pane.closeTabPrompt != nil else {
+            closePromptPane = nil
+            return false
+        }
+        guard Self.windowHostsTerminal(NSApp.keyWindow), store.focusedPane === pane else { return false }
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if mods.contains(.command) { return false }
+        guard !event.isARepeat else { return true }
+        switch (event.keyCode, mods) {
+        case (16, []), (36, []), (76, []), (13, .option):  // Y, Return, keypad Enter, ⌥W
+            resolveCloseTabPrompt(confirm: true, like: event)
+        case (45, []), (53, []):  // N, Esc
+            resolveCloseTabPrompt(confirm: false, like: event)
+        default:
+            break
+        }
+        return true
+    }
+
+    /// Answers the close-tab confirmation (keyboard or the panel's buttons).
+    func resolveCloseTabPrompt(confirm: Bool, like event: NSEvent? = nil) {
+        guard let pane = closePromptPane else { return }
+        closePromptPane = nil
+        pane.dismissCloseTabPrompt()
+        guard confirm, let event = event ?? NSApp.currentEvent else { return }
+        closeOpencodeTab(in: pane, like: event)
     }
 
     /// Whether `event` matches the (configurable) shortcut bound to `name`.
@@ -615,6 +829,7 @@ final class AppModel: ObservableObject {
         opencodeByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         rebuildTree()
         saveOpencodeCache()
+        await attention.pollActive()
     }
 
     // MARK: - Session cache (instant sidebar on next launch)
@@ -719,6 +934,7 @@ final class AppModel: ObservableObject {
     /// Opens an opencode session in a new terminal attached to the server.
     /// If a terminal is already attached to this session, selects it instead.
     func openOpencodeSession(_ session: OpencodeSession) {
+        attention.clearFinished(session.id)
         if let existing = store.sessions.first(where: { $0.opencodeSessionID == session.id }) {
             store.selectAndFocus(existing.id)
             return

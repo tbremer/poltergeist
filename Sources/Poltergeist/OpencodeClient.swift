@@ -52,6 +52,47 @@ struct OpencodeClient: Sendable {
         try await sendIgnoringBody(req)
     }
 
+    // MARK: - Attention (pending prompts / running state)
+
+    /// IDs of sessions with a running foreground drain (may include subagent
+    /// child sessions). `GET /api/session/active` → `{ data: { <id>: {…} } }`.
+    func activeSessionIDs() async throws -> Set<String> {
+        let (data, response) = try await URLSession.shared.data(for: request("api/session/active"))
+        try Self.check(response)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let running = object?["data"] as? [String: Any] else { return [] }
+        return Set(running.keys)
+    }
+
+    /// Permission requests in `sessionID` awaiting a decision.
+    func pendingPermissions(sessionID: String) async throws -> [PendingPermission] {
+        let envelope: Envelope<[PendingPermission]> = try await send(request("api/session/\(sessionID)/permission"))
+        return envelope.data
+    }
+
+    /// Forms (questions) in `sessionID` awaiting an answer.
+    func pendingForms(sessionID: String) async throws -> [PendingForm] {
+        let envelope: Envelope<[PendingForm]> = try await send(request("api/session/\(sessionID)/form"))
+        return envelope.data
+    }
+
+    /// A single session (used to walk a subagent session up to its root).
+    func session(id: String) async throws -> OpencodeSession {
+        let envelope: Envelope<OpencodeSession> = try await send(request("api/session/\(id)"))
+        return envelope.data
+    }
+
+    struct PendingPermission: Decodable, Sendable {
+        let id: String
+        let action: String?
+        let resources: [String]?
+    }
+
+    struct PendingForm: Decodable, Sendable {
+        let id: String
+        let title: String?
+    }
+
     // MARK: - Plumbing
 
     /// An authenticated request for `path` (relative to the server root).

@@ -125,6 +125,8 @@ struct SidebarCollapseObserver: NSViewRepresentable {
 /// terminal underneath.
 struct SessionSwitcherButton: View {
     @ObservedObject var store: SessionStore
+    /// Why a tab's opencode session is waiting on the user, if it is.
+    var attention: (TerminalSession) -> OpencodeAttention? = { _ in nil }
     /// Set to request opening the menu for keyboard use; reset once handled.
     @Binding var keyboardOpenRequested: Bool
     /// Called whenever the menu closes.
@@ -136,12 +138,22 @@ struct SessionSwitcherButton: View {
             hover.toggle()
         } label: {
             Image(systemName: "rectangle.stack")
+                .overlay(alignment: .topTrailing) {
+                    // Something is waiting on you (the sidebar's hidden).
+                    if let strongest = store.sessions.compactMap(attention).max() {
+                        Circle()
+                            .fill(strongest.color)
+                            .frame(width: 6, height: 6)
+                            .offset(x: 3, y: -2)
+                    }
+                }
         }
         .help("Switch session")
         .onHover { hover.setButtonHover($0) }
         .popover(isPresented: $hover.showing, arrowEdge: .bottom) {
             SessionSwitcherMenu(
                 store: store,
+                attention: attention,
                 keyboardFocus: hover.keyboardDriven,
                 onHoverChange: { hover.setMenuHover($0) },
                 onDone: { hover.close() }
@@ -229,6 +241,7 @@ private final class HoverController: ObservableObject {
 /// shared by the mouse (hover) and keyboard (↑/↓), so they never disagree.
 private struct SessionSwitcherMenu: View {
     @ObservedObject var store: SessionStore
+    let attention: (TerminalSession) -> OpencodeAttention?
     let keyboardFocus: Bool
     let onHoverChange: (Bool) -> Void
     let onDone: () -> Void
@@ -240,6 +253,7 @@ private struct SessionSwitcherMenu: View {
             ForEach(Array(store.sessions.enumerated()), id: \.element.id) { index, session in
                 SessionSwitcherRow(
                     session: session,
+                    attention: attention(session),
                     shortcut: Self.shortcut(index: index, count: store.sessions.count),
                     selected: session.id == store.selectedID,
                     highlighted: highlighted == index,
@@ -304,6 +318,7 @@ private struct SessionSwitcherMenu: View {
 /// color) on the right. Observes the session so its name stays live.
 private struct SessionSwitcherRow: View {
     @ObservedObject var session: TerminalSession
+    let attention: OpencodeAttention?
     let shortcut: String?
     let selected: Bool
     let highlighted: Bool
@@ -320,6 +335,7 @@ private struct SessionSwitcherRow: View {
                     .frame(width: 16)
                 Text(session.displayName).lineLimit(1)
                 Spacer(minLength: 16)
+                if let attention { AttentionBadge(attention: attention) }
                 if let shortcut {
                     Text(shortcut)
                         .foregroundStyle(.secondary)
@@ -338,6 +354,7 @@ private struct SessionSwitcherRow: View {
 
     private var fill: Color {
         if selected { return Color.accentColor.opacity(highlighted ? 0.3 : 0.18) }
-        return highlighted ? Color.primary.opacity(0.08) : .clear
+        if highlighted { return Color.primary.opacity(0.08) }
+        return attention.map { $0.color.opacity(0.14) } ?? .clear
     }
 }

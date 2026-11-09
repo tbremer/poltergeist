@@ -41,7 +41,12 @@ struct RootView: View {
       sidebar
         .modifier(ThemedSidebarBackground(color: themeBackground))
     } detail: {
-      TerminalDetailView(store: store, dimming: paneDimming)
+      TerminalDetailView(
+        store: store,
+        dimming: paneDimming,
+        promptStyle: promptStyle,
+        onCloseTabPrompt: { model.resolveCloseTabPrompt(confirm: $0) }
+      )
         // Collapsed: hovering the leading edge floats the sidebar over the
         // terminals (no layout change).
         .overlay(alignment: .leading) {
@@ -64,6 +69,7 @@ struct RootView: View {
             ToolbarItem(placement: .navigation) {
               SessionSwitcherButton(
                 store: store,
+                attention: { attention(for: $0) },
                 keyboardOpenRequested: $switcherOpenRequested,
                 onClose: { switcherForced = false }
               )
@@ -167,6 +173,7 @@ struct RootView: View {
           SessionRow(
             session: session,
             opencode: session.opencodeSessionID.flatMap { model.opencodeByID[$0] },
+            attention: attention(for: session),
             onClose: { store.closeSession(session.id) }
           )
           .tag(session.id)
@@ -251,6 +258,17 @@ struct RootView: View {
   /// Sidebar tint derived from the active theme's background (nil = default chrome).
   private var themeBackground: Color? {
     model.activeThemeDef.flatMap { Color(hexRGB: $0.background) }
+  }
+
+  /// Colors for in-pane prompts (close-tab confirmation), from the active
+  /// theme: its background/foreground, with ANSI yellow as the accent.
+  private var promptStyle: TerminalPromptStyle {
+    var style = TerminalPromptStyle()
+    guard let def = model.activeThemeDef else { return style }
+    style.themeBackground = Color(hexRGB: def.background).map { NSColor($0) }
+    if let foreground = Color(hexRGB: def.foreground) { style.foreground = foreground }
+    if let yellow = def.palette[3].flatMap({ Color(hexRGB: $0) }) { style.accent = yellow }
+    return style
   }
 
   /// Inactive-pane dimming options resolved for the terminal area.
@@ -359,6 +377,7 @@ struct RootView: View {
   {
     OpencodeSessionLeaf(
       session: session,
+      attention: model.attention.states[session.id],
       depth: depth,
       selecting: selectionProject == projectPath,
       selected: selectedSessionIDs.contains(session.id),
@@ -373,6 +392,12 @@ struct RootView: View {
       onRename: { beginOpencodeRename(session) },
       onDelete: { pendingDelete = session }
     )
+  }
+
+  /// Why opencode running in this terminal tab is waiting on the user, if it
+  /// is (from the TUI's own OSC 7501 reports, so hand-started opencode counts).
+  private func attention(for session: TerminalSession) -> OpencodeAttention? {
+    model.tabAttention[session.id]
   }
 
   /// Folder display label: append "/" except for the root and Unknown nodes.
@@ -452,6 +477,8 @@ struct RootView: View {
 private struct TerminalDetailView: View {
   @ObservedObject var store: SessionStore
   let dimming: PaneDimming
+  let promptStyle: TerminalPromptStyle
+  let onCloseTabPrompt: (Bool) -> Void
 
   var body: some View {
     if store.sessions.isEmpty {
@@ -473,7 +500,9 @@ private struct TerminalDetailView: View {
             tree: tree,
             tabIsSplit: !tree.isSingleLeaf,
             dimming: dimming,
-            store: store
+            store: store,
+            promptStyle: promptStyle,
+            onCloseTabPrompt: onCloseTabPrompt
           )
           .opacity(tab.id == store.selectedID ? 1 : 0)
           .allowsHitTesting(tab.id == store.selectedID)
@@ -568,6 +597,7 @@ private struct ThemedSidebarBackground: ViewModifier {
 private struct SessionRow: View {
   @ObservedObject var session: TerminalSession
   let opencode: OpencodeSession?
+  let attention: OpencodeAttention?
   let onClose: () -> Void
   @State private var hovering = false
 
@@ -604,6 +634,7 @@ private struct SessionRow: View {
         }
       }
       Spacer(minLength: 4)
+      if let attention { AttentionBadge(attention: attention) }
       if hovering {
         Button(action: onClose) {
           Image(systemName: "xmark").font(.caption)
@@ -613,6 +644,15 @@ private struct SessionRow: View {
         .help("Close session")
       }
     }
+    .background {
+      if let attention {
+        RoundedRectangle(cornerRadius: 5)
+          .fill(attention.color.opacity(0.14))
+          .padding(.horizontal, -6)
+          .padding(.vertical, -2)
+      }
+    }
+    .help(attention?.help ?? "")
     .onHover { hovering = $0 }
   }
 }
@@ -621,6 +661,7 @@ private struct SessionRow: View {
 /// select mode); hovering reveals a delete button.
 private struct OpencodeSessionLeaf: View {
   let session: OpencodeSession
+  let attention: OpencodeAttention?
   let depth: Int
   let selecting: Bool
   let selected: Bool
@@ -638,6 +679,7 @@ private struct OpencodeSessionLeaf: View {
       }
       OpencodeRow(session: session)
       Spacer(minLength: 4)
+      if let attention { AttentionBadge(attention: attention) }
       if session.isStale {
         Image(systemName: "moon.zzz.fill")
           .font(.caption)

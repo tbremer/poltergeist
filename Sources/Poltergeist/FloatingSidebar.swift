@@ -85,8 +85,10 @@ struct FloatingSidebar<Content: View>: View {
 /// The panel fill: the theme background (or the system window background when
 /// unthemed), lifted slightly toward white so the floating panel reads as a
 /// raised surface over the identical terminal color. Re-resolves on
-/// light/dark changes.
-private struct PanelBackground: NSViewRepresentable {
+/// light/dark changes. Also backs the in-pane close-tab prompt. (An AppKit
+/// layer, because SwiftUI fills/materials render see-through over the
+/// terminal's surface.)
+struct PanelBackground: NSViewRepresentable {
     let themeColor: NSColor?
 
     func makeNSView(context: Context) -> FillView {

@@ -32,6 +32,12 @@ final class SessionStore: ObservableObject {
     private var saveWork: DispatchWorkItem?
     private var foregroundTimer: Timer?
 
+    /// A tab's attention rose (newly waiting, or escalated): tab, the pane that
+    /// raised it, and the new state.
+    var onTabAttentionRaised: ((TerminalSession, TerminalSession, OpencodeAttention) -> Void)?
+    /// Any tab's attention changed (for the Dock badge / mirrored UI state).
+    var onTabAttentionChanged: (() -> Void)?
+
     init(
         environmentOverrides: [String: String] = [:],
         config: AppConfig = AppConfig(),
@@ -102,6 +108,10 @@ final class SessionStore: ObservableObject {
             theme: terminalTheme ?? .default
         )
         nextOrdinal += 1
+        session.onAttentionChange = { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.paneAttentionChanged(session)
+        }
         return session
     }
 
@@ -224,10 +234,54 @@ final class SessionStore: ObservableObject {
     /// `@Published` state, so polling can't disturb terminal focus.
     private func refreshForegroundProcesses() {
         for tab in sessions {
-            let states = tree(for: tab).leaves.compactMap { $0.foregroundIsOpencode() }
-            guard !states.isEmpty else { continue }
-            tab.setOpencodeActive(states.contains(true))
+            let leaves = tree(for: tab).leaves
+            let states = leaves.map { $0.foregroundIsOpencode() }
+            // opencode exited from a pane: drop any status it left behind.
+            for (leaf, isOpencode) in zip(leaves, states) where isOpencode == false && leaf.paneAttention != nil {
+                leaf.resetProgramStatus()
+            }
+            let known = states.compactMap { $0 }
+            guard !known.isEmpty else { continue }
+            tab.setOpencodeActive(known.contains(true))
         }
+        // Also catches panes closed/moved since the last change.
+        recomputeTabAttention()
+    }
+
+    // MARK: - Attention
+
+    /// The tab whose pane tree contains `leaf`.
+    private func tab(containing leaf: TerminalSession) -> TerminalSession? {
+        sessions.first { tab in tree(for: tab).leaves.contains { $0 === leaf } }
+    }
+
+    private func paneAttentionChanged(_ leaf: TerminalSession) {
+        guard let tab = tab(containing: leaf) else { return }
+        let old = tab.tabAttention
+        let new = tree(for: tab).leaves.compactMap(\.paneAttention).max()
+        guard new != old else { return }
+        tab.setTabAttention(new)
+        if let new, old.map({ new > $0 }) ?? true {
+            onTabAttentionRaised?(tab, leaf, new)
+        }
+        onTabAttentionChanged?()
+    }
+
+    private func recomputeTabAttention() {
+        var changed = false
+        for tab in sessions {
+            let new = tree(for: tab).leaves.compactMap(\.paneAttention).max()
+            if tab.tabAttention != new {
+                tab.setTabAttention(new)
+                changed = true
+            }
+        }
+        if changed { onTabAttentionChanged?() }
+    }
+
+    /// The user is looking at `tab`: clear "finished" in all its panes.
+    func markTabSeen(_ tab: TerminalSession) {
+        for leaf in tree(for: tab).leaves { leaf.markSeen() }
     }
 
     // MARK: - Panes (splits)
@@ -402,6 +456,47 @@ final class SessionStore: ObservableObject {
         return focusedLeaf(in: tab).state.send(text)
     }
 
+    /// Whether the focused pane of the selected tab is running opencode.
+    var focusedPaneRunsOpencode: Bool {
+        guard let tab = selectedSession else { return false }
+        return focusedLeaf(in: tab).foregroundIsOpencode() == true
+    }
+
+    /// The pane holding keyboard focus in the selected tab.
+    var focusedPane: TerminalSession? {
+        selectedSession.map { focusedLeaf(in: $0) }
+    }
+
+    /// Presses keys in `pane` as if typed: synthesized key events go through
+    /// the Ghostty surface, so they're encoded for whatever keyboard protocol
+    /// the running program enabled (opencode turns on kitty's, which is what
+    /// lets it tell ⌃1 from 1).
+    @discardableResult
+    func pressKeys(_ keys: [SyntheticKey], in pane: TerminalSession, like event: NSEvent) -> Bool {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let content = window.contentView,
+              let view = Self.terminalView(for: pane.state, in: content)
+        else { return false }
+        for key in keys {
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                guard let synthesized = NSEvent.keyEvent(
+                    with: type,
+                    location: event.locationInWindow,
+                    modifierFlags: key.modifiers,
+                    timestamp: event.timestamp,
+                    windowNumber: event.windowNumber,
+                    context: nil,
+                    characters: key.characters,
+                    charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+                    isARepeat: false,
+                    keyCode: key.keyCode
+                ) else { return false }
+                if type == .keyDown { view.keyDown(with: synthesized) } else { view.keyUp(with: synthesized) }
+            }
+        }
+        return true
+    }
+
     /// Whether a sidebar tree row is expanded. With no user override, the
     /// `defaultExpanded` value decides — callers pass `depth == 0`, so only the
     /// top-level folder opens by default; a click records an explicit override for
@@ -481,5 +576,25 @@ final class SessionStore: ObservableObject {
 
     private func persistMetadata() {
         Persistence.save(snapshot())
+    }
+}
+
+/// A key press to synthesize into a surface (see `SessionStore.pressKeys`).
+/// `characters` / `charactersIgnoringModifiers` mirror what AppKit reports
+/// for the real key (e.g. ⌃X is "\u{18}" / "x").
+struct SyntheticKey {
+    var keyCode: UInt16
+    var characters: String
+    var charactersIgnoringModifiers: String
+    var modifiers: NSEvent.ModifierFlags = []
+
+    /// opencode's default leader key, ⌃X.
+    static let opencodeLeader = SyntheticKey(
+        keyCode: 7, characters: "\u{18}", charactersIgnoringModifiers: "x", modifiers: .control
+    )
+
+    /// An unmodified letter key.
+    static func letter(_ letter: Character, keyCode: UInt16) -> SyntheticKey {
+        SyntheticKey(keyCode: keyCode, characters: String(letter), charactersIgnoringModifiers: String(letter))
     }
 }

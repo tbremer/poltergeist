@@ -251,9 +251,16 @@ final class OpencodeServerManager: ObservableObject {
         let password: String?
     }
 
+    /// `$XDG_STATE_HOME/opencode/service.json` (default `~/.local/state`),
+    /// matching where opencode writes it.
     private static var serviceStateFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/state/opencode/service.json")
+        let base: URL
+        if let state = ProcessInfo.processInfo.environment["XDG_STATE_HOME"], !state.isEmpty {
+            base = URL(fileURLWithPath: state, isDirectory: true)
+        } else {
+            base = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state")
+        }
+        return base.appendingPathComponent("opencode/service.json")
     }
 
     /// Healthy = an authenticated `GET /api/info` answers 200. (The v2 server

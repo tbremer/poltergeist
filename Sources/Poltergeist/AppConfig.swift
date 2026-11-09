@@ -39,6 +39,7 @@ struct AppConfig: Codable, Equatable {
             configuration = configuration.fontFamily(fontFamily)
         }
         return configuration.fontSize(effectiveFontSize).windowPaddingY(0).fontThicken(false)
+            .poltergeistKeybinds()
     }
 
     static func load() -> AppConfig {
@@ -53,5 +54,16 @@ struct AppConfig: Codable, Equatable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(config) else { return }
         try? data.write(to: AppPaths.configFile, options: .atomic)
+    }
+}
+
+extension TerminalConfiguration {
+    /// Ghostty binds ⌃Tab / ⌃⇧Tab to next/previous *Ghostty* tab by default;
+    /// Poltergeist has no Ghostty tabs, so the press would be consumed and
+    /// never reach the program. Unbind them so ⌃Tab (and ⌥Tab, replayed as
+    /// ⌃Tab for opencode's tabs) is encoded to the PTY like any other key.
+    func poltergeistKeybinds() -> TerminalConfiguration {
+        custom("keybind", "ctrl+tab=unbind")
+            .custom("keybind", "ctrl+shift+tab=unbind")
     }
 }

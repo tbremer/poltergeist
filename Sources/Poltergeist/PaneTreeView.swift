@@ -18,6 +18,9 @@ struct PaneTabView: View {
     let tabIsSplit: Bool
     let dimming: PaneDimming
     let store: SessionStore
+    var promptStyle = TerminalPromptStyle()
+    /// Answer to a pane's close-tab confirmation (true = close).
+    var onCloseTabPrompt: (Bool) -> Void = { _ in }
 
     /// Live divider drag (split id + proposed fraction), reflected in the layout
     /// without touching the store until the drag ends.
@@ -36,7 +39,10 @@ struct PaneTabView: View {
             )
             ZStack(alignment: .topLeading) {
                 ForEach(layout.panes, id: \.session.id) { placement in
-                    PaneLeafView(session: placement.session, tabIsSplit: tabIsSplit, dimming: dimming, store: store)
+                    PaneLeafView(
+                        session: placement.session, tabIsSplit: tabIsSplit, dimming: dimming, store: store,
+                        promptStyle: promptStyle, onCloseTabPrompt: onCloseTabPrompt
+                    )
                         .frame(width: placement.rect.width, height: placement.rect.height)
                         .position(x: placement.rect.midX, y: placement.rect.midY)
                 }
@@ -173,6 +179,8 @@ private struct PaneLeafView: View {
     let tabIsSplit: Bool
     let dimming: PaneDimming
     let store: SessionStore
+    let promptStyle: TerminalPromptStyle
+    let onCloseTabPrompt: (Bool) -> Void
 
     var body: some View {
         let dim = tabIsSplit && dimming.enabled && !session.state.isFocused
@@ -181,5 +189,153 @@ private struct PaneLeafView: View {
             .onChange(of: session.state.isFocused) { _, focused in
                 if focused { store.unfocusOtherPanes(except: session.id) }
             }
+            .overlay {
+                if let title = session.closeTabPrompt {
+                    GeometryReader { geo in
+                        // Centered horizontally; vertically the leftover space is
+                        // split 1/3 above, 2/3 below (three equal flexible spacers).
+                        VStack(spacing: 0) {
+                            Color.clear.frame(maxHeight: .infinity)
+                            CloseTabPromptView(
+                                title: title, style: promptStyle, availableWidth: geo.size.width,
+                                onAnswer: onCloseTabPrompt
+                            )
+                            Color.clear.frame(maxHeight: .infinity)
+                            Color.clear.frame(maxHeight: .infinity)
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                    }
+                }
+            }
+    }
+}
+
+/// Colors for in-pane prompts, taken from the terminal theme so they read as
+/// part of the terminal rather than app chrome.
+struct TerminalPromptStyle {
+    /// Theme background (nil = system window background); drawn opaquely by
+    /// `PanelBackground`.
+    var themeBackground: NSColor?
+    var background: Color { Color(nsColor: themeBackground ?? .windowBackgroundColor) }
+    var foreground: Color = .primary
+    var accent: Color = .orange
+}
+
+/// Terminal-styled confirmation drawn centered over a pane (not a macOS
+/// alert): answered from the keyboard (Y/Return close, N/Esc cancel — see
+/// `AppModel.handleCloseTabPrompt`) or by clicking. Holds no focus, so the
+/// terminal stays first responder underneath. Laid out on a character grid
+/// with a classic TUI drop shadow of `▒` cells (one row down, two columns
+/// right).
+private struct CloseTabPromptView: View {
+    let title: String
+    let style: TerminalPromptStyle
+    /// The pane's width, to size the panel (in whole columns) to fit.
+    let availableWidth: CGFloat
+    let onAnswer: (Bool) -> Void
+
+    /// Content height before snapping the panel up to whole rows.
+    @State private var contentHeight: CGFloat = 0
+
+    /// Panel width in columns: up to 54, leaving room for margins + shadow.
+    private var columns: CGFloat {
+        let fit = ((availableWidth - 32) / PromptGrid.cell.width).rounded(.down) - 2
+        return max(24, min(54, fit))
+    }
+
+    var body: some View {
+        let cell = PromptGrid.cell
+        let panel = CGSize(width: columns * cell.width, height: PromptGrid.snap(contentHeight, to: cell.height))
+        content
+            .frame(width: panel.width, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)  // intrinsic height, independent of the frame below
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            .frame(width: panel.width, height: panel.height, alignment: .top)
+            .background(PanelBackground(themeColor: style.themeBackground))
+            .overlay(Rectangle().strokeBorder(style.accent, lineWidth: 1))
+            .background(alignment: .topLeading) {
+                ShadeShadow(panel: panel, color: style.foreground.opacity(0.45))
+            }
+            .opacity(contentHeight == 0 ? 0 : 1)
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: PromptGrid.cell.height / 2) {
+            Text("Close tab?")
+                .fontWeight(.bold)
+                .foregroundStyle(style.accent)
+            Text("\u{201C}\(title)\u{201D} is still working. Closing the tab won't stop it on the server.")
+                .foregroundStyle(style.foreground)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: PromptGrid.cell.width * 3) {
+                key("y", "close", primary: true) { onAnswer(true) }
+                key("n", "cancel", primary: false) { onAnswer(false) }
+            }
+        }
+        .font(Font(PromptGrid.font))
+        .padding(.horizontal, PromptGrid.cell.width * 2)
+        .padding(.vertical, PromptGrid.cell.height)
+    }
+
+    private func key(_ key: String, _ label: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: PromptGrid.cell.width) {
+                Text(" \(key) ")
+                    .fontWeight(.bold)
+                    .foregroundStyle(primary ? style.background : style.foreground)
+                    .background(primary ? style.accent : style.foreground.opacity(0.15))
+                Text(label).foregroundStyle(style.foreground.opacity(0.8))
+            }
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+}
+
+/// The prompt's character grid: Menlo (which has the block/shade glyphs, so
+/// they tile without font fallback) and its cell size.
+@MainActor
+private enum PromptGrid {
+    static let font = NSFont(name: "Menlo", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+
+    static let cell: CGSize = {
+        let width = ("M" as NSString).size(withAttributes: [.font: font]).width
+        let height = NSLayoutManager().defaultLineHeight(for: font)
+        return CGSize(width: ceil(width), height: ceil(height))
+    }()
+
+    static func snap(_ length: CGFloat, to unit: CGFloat) -> CGFloat {
+        (length / unit).rounded(.up) * unit
+    }
+}
+
+/// The drop shadow: `▒` cells along the panel's right edge (two columns,
+/// starting one row down) and bottom edge (one row, starting two columns in).
+/// Glyphs only, no fill, so the terminal shows through like a real TUI shadow.
+private struct ShadeShadow: View {
+    let panel: CGSize
+    let color: Color
+
+    var body: some View {
+        let cell = PromptGrid.cell
+        Canvas { context, _ in
+            let glyph = context.resolve(Text("\u{2592}").font(Font(PromptGrid.font)).foregroundColor(color))
+            func draw(column: Int, row: Int) {
+                let rect = CGRect(x: CGFloat(column) * cell.width, y: CGFloat(row) * cell.height,
+                                  width: cell.width, height: cell.height)
+                context.draw(glyph, in: rect)
+            }
+            let columns = Int((panel.width / cell.width).rounded())
+            let rows = Int((panel.height / cell.height).rounded())
+            for row in 1 ... max(rows, 1) {
+                draw(column: columns, row: row)
+                draw(column: columns + 1, row: row)
+            }
+            for column in 2 ..< columns + 2 {
+                draw(column: column, row: rows)
+            }
+        }
+        .frame(width: panel.width + cell.width * 2, height: panel.height + cell.height)
+        .allowsHitTesting(false)
     }
 }
