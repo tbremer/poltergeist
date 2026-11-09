@@ -16,6 +16,7 @@ Poltergeist is a single-window macOS terminal emulator built on [Ghostty](https:
 - Split panes (side-by-side and stacked), draggable dividers (double-click to recenter), and pane navigation.
 - OpenCode integration (OpenCode v2): uses OpenCode's shared background service (starting it if needed), lists sessions by project in a sidebar, and lets you open, create, rename, and delete sessions.
 - OpenCode-aware tabs: a tab shows a ✨ sparkle while `opencode` is the foreground program in any of its panes — whether you opened it from the sidebar or ran `opencode` by hand — and goes back to a terminal icon when it exits.
+- Know when OpenCode needs you: a tab whose opencode is waiting on a permission prompt (✋), a question (💬), or just finished its turn (●) gets a tinted row and badge in the sidebar and switcher, a count on the Dock icon (which bounces for prompts while you're in another app), and a macOS notification with opencode's message when you're not looking at it — click it to jump to the tab. Works for `opencode` started by hand too.
 - Fast session switching: ⌘1–⌘9 jump to a tab (⌘0 = last), and a session switcher (⇧⌥⌘B, or hover the stack icon by the traffic lights when the sidebar is collapsed) works by mouse or keyboard.
 - With the sidebar collapsed, hover the window's left edge to float the sidebar over your terminals — fully interactive, without resizing anything.
 - Drag sessions in the sidebar to reorder them (⌘-numbers follow the new order, and it's remembered).
@@ -83,8 +84,14 @@ Only run builds you trust — ideally ones you have built yourself from source.
 | Focus next / previous pane | ⌘] / ⌘[ |
 | Close pane / close window | ⌘W / ⇧⌘W |
 | Settings | ⌘, |
+| OpenCode tab 1–9 / 10 (in a pane running opencode) | ⌥1–⌥9 / ⌥0 |
+| Next / previous OpenCode tab (in a pane running opencode) | ⌥Tab / ⌥⇧Tab |
+| New OpenCode session (in a pane running opencode) | ⌥N |
+| Close OpenCode tab (in a pane running opencode) | ⌥W |
 
-Everything except the ⌘-number, close, and Settings shortcuts can be rebound in **Settings → Keyboard**. In the session switcher, use ↑/↓ and Return to pick, 1–9/0 to jump, and Esc to close.
+The OpenCode keys only apply while the focused pane is running `opencode` (they're passed to it as its default ⌃1–⌃0 / ⌃Tab / ⌃⇧Tab / ⌃X N / ⌃X W); elsewhere ⌥ types as usual. If the tab you're closing is still working (or waiting on a prompt), a confirmation appears in the pane first: Y or Return closes, N or Esc cancels.
+
+Everything except the ⌘-number, OpenCode tab, close, and Settings shortcuts can be rebound in **Settings → Keyboard**. In the session switcher, use ↑/↓ and Return to pick, 1–9/0 to jump, and Esc to close.
 
 ## Configuration
 
