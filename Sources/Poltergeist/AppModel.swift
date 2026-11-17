@@ -542,18 +542,18 @@ final class AppModel: ObservableObject {
     /// opencode — elsewhere ⌥ keeps typing its usual characters:
     /// - ⌥1…⌥9, ⌥0 → ⌃1…⌃0 (opencode `session.tab.select.N`, ⌥0 = tab 10)
     /// - ⌥Tab / ⌥⇧Tab → ⌃Tab / ⌃⇧Tab (`session.tab.next` / `.previous`)
-    /// - ⌥N → ⌃X N (`session.new`)
+    /// - ⌥N / ⌥T → ⌃X N (`session.new`)
     /// - ⌥W → ⌃X W (`session.tab.close`), confirming first if that tab's
     ///   session is still working or waiting on a prompt
     /// Replayed through the surface as opencode's default keys (⌃-digit only
     /// reaches it via the kitty keyboard protocol, which it enables). Matched
-    /// by key code (US/ANSI: Tab=48, W=13, N=45), so ⌥N's dead key never starts.
+    /// by key code (US/ANSI: Tab=48, W=13, N=45, T=17), so ⌥N's dead key never starts.
     private func handleOpencodeTabShortcut(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isTab = event.keyCode == 48
         let isDigit = !isTab && mods == .option
             && event.charactersIgnoringModifiers.map { $0.count == 1 && Int($0) != nil } == true
-        let isLetter = mods == .option && (event.keyCode == 13 || event.keyCode == 45)
+        let isLetter = mods == .option && [13, 45, 17].contains(event.keyCode)
         guard isDigit || isLetter || (isTab && (mods == .option || mods == [.option, .shift])),
               let pane = store.focusedPane, pane.foregroundIsOpencode() == true
         else { return false }
@@ -561,7 +561,7 @@ final class AppModel: ObservableObject {
         guard isTab || !event.isARepeat else { return true }
 
         if isLetter {
-            if event.keyCode == 45 {
+            if event.keyCode == 45 || event.keyCode == 17 {
                 store.pressKeys([.opencodeLeader, .letter("n", keyCode: 45)], in: pane, like: event)
             } else if let busy = pane.busyCurrentTabTitle() {
                 closePromptPane = pane

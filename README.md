@@ -86,7 +86,7 @@ Only run builds you trust — ideally ones you have built yourself from source.
 | Settings | ⌘, |
 | OpenCode tab 1–9 / 10 (in a pane running opencode) | ⌥1–⌥9 / ⌥0 |
 | Next / previous OpenCode tab (in a pane running opencode) | ⌥Tab / ⌥⇧Tab |
-| New OpenCode session (in a pane running opencode) | ⌥N |
+| New OpenCode session (in a pane running opencode) | ⌥N or ⌥T |
 | Close OpenCode tab (in a pane running opencode) | ⌥W |
 
 The OpenCode keys only apply while the focused pane is running `opencode` (they're passed to it as its default ⌃1–⌃0 / ⌃Tab / ⌃⇧Tab / ⌃X N / ⌃X W); elsewhere ⌥ types as usual. If the tab you're closing is still working (or waiting on a prompt), a confirmation appears in the pane first: Y or Return closes, N or Esc cancels.
