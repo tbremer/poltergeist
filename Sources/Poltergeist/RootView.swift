@@ -617,6 +617,13 @@ private struct SessionRow: View {
               .help("No activity in over 30 days")
           }
         }
+        // Live as the shell reports its cwd (OSC 7); keep the tail visible.
+        Text((session.currentDirectory as NSString).abbreviatingWithTildeInPath)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+          .help(session.currentDirectory)
         if let opencode {
           HStack(spacing: 5) {
             if opencode.isRecentlyActive {
