@@ -217,6 +217,7 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { self?.toggleAppVisibility() }
         }
 
+        DictationSupport.install()
         installShortcutMonitor()
         installSidebarClickMonitor()
         configureAttention()
