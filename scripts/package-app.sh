@@ -25,7 +25,7 @@ iconset="$dist/Poltergeist.iconset"
 icns="$dist/Poltergeist.icns"
 app="$dist/Poltergeist.app"
 # Bundle version; CI sets POLTERGEIST_VERSION from the release tag.
-app_version="${POLTERGEIST_VERSION:-0.4.1}"
+app_version="${POLTERGEIST_VERSION:-0.4.2}"
 
 for tool in rsvg-convert iconutil swift; do
     if ! command -v "$tool" >/dev/null 2>&1; then
